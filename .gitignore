@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 output/
 scraper.log
-data/pflegeheime_nrw.csv
+

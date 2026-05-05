@@ -140,7 +140,7 @@ def _search_bing(query: str) -> str | None:
             timeout=15,
         )
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(resp.text, "lxml")
         for a in soup.select("li.b_algo h2 a[href], li.b_algo a.tilk[href]"):
             href = a.get("href", "")
             if href.startswith("http") and not _is_aggregator(href):
@@ -171,7 +171,7 @@ def search_website(name: str, ort: str) -> str | None:
 # ---------------------------------------------------------------------------
 def find_impressum_url(base_url: str, html: str) -> str | None:
     """Find the Impressum link on the homepage."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
     # Look for links containing "impressum"
     for a in soup.find_all("a", href=True):
@@ -214,7 +214,7 @@ def fetch_impressum(url: str) -> str | None:
 # ---------------------------------------------------------------------------
 def extract_impressum_data(html: str) -> dict:
     """Extract structured data from Impressum page."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
     # Remove script/style noise
     for tag in soup(["script", "style", "nav", "header", "footer"]):
@@ -349,7 +349,7 @@ def process_facility(ph: PflegeheimData) -> PflegeheimData:
         return ph
 
     # Validate: city name must appear somewhere on the homepage
-    page_text = BeautifulSoup(homepage_html, "html.parser").get_text(separator=" ").lower()
+    page_text = BeautifulSoup(homepage_html, "lxml").get_text(separator=" ").lower()
     if ph.ort.lower() not in page_text:
         log.info(f"[SKIP] City '{ph.ort}' not on page {website_url} — wrong website")
         ph.status = "search_failed"

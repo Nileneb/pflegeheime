@@ -188,7 +188,7 @@ def _fetch_page_text(url: str) -> str:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12, allow_redirects=True)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(resp.text, "lxml")
         for tag in soup(["script", "style", "nav", "header", "footer"]):
             tag.decompose()
         return soup.get_text(separator=" ", strip=True)[:3000]

@@ -533,9 +533,9 @@ def main():
     results = []
     if args.resume:
         prev = load_from_seed(args.resume)
-        skip_statuses = {"pending"} if args.retry_failed else {"pending", "search_failed"}
+        retry_statuses = {"pending", "search_failed"} if args.retry_failed else {"pending"}
         for ph in prev:
-            if ph.status not in skip_statuses:
+            if ph.status not in retry_statuses:
                 already_done.add(ph.api_id)
                 results.append(ph)
         log.info(f"Resuming: {len(already_done)} already processed, skipping them")

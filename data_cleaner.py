@@ -316,6 +316,7 @@ def process_one(conn) -> bool:
 
 
 def main():
+    global OLLAMA_MODEL
     parser = argparse.ArgumentParser(description="Pflegeheim Data Cleaner (one row per run)")
     parser.add_argument("--csv", default=CSV_PATH, help="Path to CSV file")
     parser.add_argument("--import-only", action="store_true", help="Only import CSV, skip cleaning")
@@ -324,7 +325,6 @@ def main():
     parser.add_argument("--delay", type=float, default=2.0, help="Delay between rows in --loop mode")
     args = parser.parse_args()
 
-    global OLLAMA_MODEL
     OLLAMA_MODEL = args.model
 
     conn = db_connect()

@@ -31,6 +31,12 @@ COLS = [
     ("gf_source", "GF-Quelle", 30),
     ("einrichtungsleitung_final", "Einrichtungsleitung", 26),
     ("el_source", "EL-Quelle", 18),
+    ("facebook_final", "Facebook", 30),
+    ("instagram_final", "Instagram", 30),
+    ("linkedin_final", "LinkedIn", 30),
+    ("youtube_final", "YouTube", 30),
+    ("social_media_final", "Social Media (alle)", 44),
+    ("newsletter_final", "Newsletter", 34),
     ("quality_final", "Qualität", 10),
     ("data_source_summary", "Quellen/Hinweise", 40),
 ]
@@ -101,15 +107,21 @@ def export_xlsx(rows, path):
         ("mit Geschäftsführung (Impressum-belegt)",
          one("SELECT count(*) FROM pflegeheime WHERE geschaeftsfuehrung_final<>'' AND geschaeftsfuehrung_final<>'Nicht ermittelt'")),
         ("mit Einrichtungsleitung", one("SELECT count(*) FROM pflegeheime WHERE einrichtungsleitung_final<>'' AND einrichtungsleitung_final<>'Nicht ermittelt'")),
+        ("mit Social-Media-Profil", one("SELECT count(*) FROM pflegeheime WHERE social_media_final<>''")),
+        ("davon Facebook", one("SELECT count(*) FROM pflegeheime WHERE facebook_final<>''")),
+        ("davon Instagram", one("SELECT count(*) FROM pflegeheime WHERE instagram_final<>''")),
+        ("davon LinkedIn", one("SELECT count(*) FROM pflegeheime WHERE linkedin_final<>''")),
+        ("davon YouTube", one("SELECT count(*) FROM pflegeheime WHERE youtube_final<>''")),
+        ("mit Newsletter", one("SELECT count(*) FROM pflegeheime WHERE newsletter_final<>''")),
     ]
     r = 3
     for label, val in rowsinfo:
-        s[f"A{r}"] = label; s[f"B{r}"] = val
+        s[f"A{r}"] = label
         s[f"B{r}"] = f"{val}  ({100*val//N}%)"
         r += 1
-    s["A11"] = "Qualität:"; s["A11"].font = Font(bold=True)
+    r += 1
+    s[f"A{r}"] = "Qualität:"; s[f"A{r}"].font = Font(bold=True); r += 1
     cur.execute("SELECT quality_final, count(*) FROM pflegeheime GROUP BY quality_final ORDER BY 2 DESC")
-    r = 12
     for q, n in cur.fetchall():
         s[f"A{r}"] = q; s[f"B{r}"] = n; r += 1
     s.column_dimensions["A"].width = 40; s.column_dimensions["B"].width = 18

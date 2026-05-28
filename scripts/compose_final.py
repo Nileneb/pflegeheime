@@ -38,7 +38,16 @@ ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS gf_source TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS el_source TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS quality_final TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS data_source_summary TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS facebook_final TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS instagram_final TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS linkedin_final TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS youtube_final TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS social_media_final TEXT;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS newsletter_final TEXT;
 """
+
+SOCIAL_PLATFORMS = ["facebook", "instagram", "linkedin", "youtube",
+                    "twitter", "tiktok", "xing", "pinterest", "whatsapp"]
 
 ROLE_WORDS = ("sozial", "dienst", "verwaltung", "leitung", "büro", "sekretariat",
               "empfang", "pflegedienst", "zentrale", "aufnahme", "beratung", "team")
@@ -89,6 +98,22 @@ def main():
         cur.execute("SELECT api_id, gf, source_url, method FROM websearch_gf WHERE gf IS NOT NULL AND gf<>''")
         for aid, gf, src, method in cur.fetchall():
             ws_gf[aid] = {"gf": gf, "src": src, "method": method}
+    except Exception:
+        conn.rollback()  # Tabelle existiert evtl. noch nicht
+
+    # domain -> Social-Media + Newsletter (Träger-Eigenschaft, pro Domain gecrawlt)
+    dom_social = {}
+    try:
+        cols = ", ".join(SOCIAL_PLATFORMS)
+        cur.execute(f"SELECT domain, {cols}, newsletter_url, newsletter_provider, "
+                    f"has_newsletter FROM domain_social")
+        for r in cur.fetchall():
+            dom = r[0]
+            d = {p: r[1 + i] for i, p in enumerate(SOCIAL_PLATFORMS)}
+            d["newsletter_url"] = r[1 + len(SOCIAL_PLATFORMS)]
+            d["newsletter_provider"] = r[2 + len(SOCIAL_PLATFORMS)]
+            d["has_newsletter"] = r[3 + len(SOCIAL_PLATFORMS)]
+            dom_social[dom] = d
     except Exception:
         conn.rollback()  # Tabelle existiert evtl. noch nicht
 
@@ -189,15 +214,43 @@ def main():
         else:
             q = "empty"
 
+        # --- Social Media + Newsletter (Träger-Domain) ---
+        soc = dom_social.get(dom or "")
+        fb = ig = li = yt = ""
+        social_all = ""
+        newsletter = ""
+        if soc:
+            fb = soc.get("facebook") or ""
+            ig = soc.get("instagram") or ""
+            li = soc.get("linkedin") or ""
+            yt = soc.get("youtube") or ""
+            parts = []
+            for p in SOCIAL_PLATFORMS:
+                v = soc.get(p)
+                if v:
+                    parts.append(f"{p}: {v}")
+            social_all = " | ".join(parts)
+            if soc.get("has_newsletter"):
+                nl = soc.get("newsletter_url") or ""
+                prov = soc.get("newsletter_provider")
+                newsletter = nl if nl else (f"ja ({prov})" if prov else "ja")
+                if nl and prov:
+                    newsletter = f"{nl} ({prov})"
+            stat["social_any"] = stat.get("social_any", 0) + (1 if social_all else 0)
+            stat["newsletter_any"] = stat.get("newsletter_any", 0) + (1 if newsletter else 0)
+
         summary = " | ".join(srcs) + (f" || issues:{','.join(issues)}" if issues else "")
         upd.append((telefon, email, website, adresse, el, gf, traeger,
-                    gf_src, el_src, q, summary, api_id))
+                    gf_src, el_src, q, summary,
+                    fb, ig, li, yt, social_all, newsletter, api_id))
 
     cur.executemany("""
         UPDATE pflegeheime SET
           telefon_final=%s, email_final=%s, website_final=%s, adresse_final=%s,
           einrichtungsleitung_final=%s, geschaeftsfuehrung_final=%s, traeger_final=%s,
-          gf_source=%s, el_source=%s, quality_final=%s, data_source_summary=%s
+          gf_source=%s, el_source=%s, quality_final=%s, data_source_summary=%s,
+          facebook_final=%s, instagram_final=%s, linkedin_final=%s, youtube_final=%s,
+          social_media_final=%s, newsletter_final=%s
         WHERE api_id=%s
     """, upd)
     conn.commit()
@@ -208,6 +261,8 @@ def main():
           stat["gf_none"], "nicht ermittelt")
     print("EL:", stat["el_api"], "aus API-ansprechpartner,",
           stat["el_mistral"], "aus mistral,", stat["el_none"], "keine")
+    print("Social:", stat.get("social_any", 0), "Heime mit Social-Media,",
+          stat.get("newsletter_any", 0), "mit Newsletter")
 
     # quality distribution
     cur.execute("SELECT quality_final, count(*) FROM pflegeheime GROUP BY quality_final ORDER BY 2 DESC")

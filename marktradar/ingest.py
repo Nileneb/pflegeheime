@@ -109,7 +109,7 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
                 conn.commit()
                 continue
             items = parse_feed(content)
-            if limit:
+            if limit is not None:
                 items = items[:limit]
             ins = 0
             for it in items:

@@ -50,6 +50,16 @@ _BY_CODE: dict[str, dict] = {lang["code"]: lang for lang in LANGUAGES}
 
 CODES: list[str] = [lang["code"] for lang in LANGUAGES]
 
+# Languages we actually fetch sources in — all are ⊆ CODES.
+FETCH_LANGS: list[str] = ["en", "es", "fr", "pt", "ar", "ru", "it", "nl", "pl", "tr", "uk", "ja"]
+
+# Representative country code for Google News hl/gl/ceid per fetch language.
+NEWS_REGION: dict[str, str] = {
+    "en": "US", "es": "ES", "fr": "FR", "pt": "BR",
+    "ar": "SA", "ru": "RU", "it": "IT", "nl": "NL",
+    "pl": "PL", "tr": "TR", "uk": "UA", "ja": "JP",
+}
+
 
 def by_code(code: str) -> dict | None:
     entry = _BY_CODE.get(code)

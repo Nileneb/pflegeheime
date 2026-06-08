@@ -140,6 +140,13 @@ def bootstrap(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE org_units ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # WHY: hashtag_posts existed before lang_code/country were designed; CREATE TABLE
+    # IF NOT EXISTS won't add new columns to an existing table.
+    for col in ("lang_code TEXT", "country TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE hashtag_posts ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 

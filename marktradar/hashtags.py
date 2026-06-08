@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -130,20 +131,23 @@ def fetch_mastodon(term, limit=20, instance="mastodon.social"):
     return out
 
 
-def fetch_bluesky(term, limit=20):
+def fetch_bluesky(term, limit=20, lang=None):
     q = urllib.parse.quote("#" + term.lstrip("#"))
     # WHY: public.api.bsky.app antwortet 403 (Cloudflare); api.bsky.app liefert die
     # unauth. AppView-Suche aus.
-    data = _get(f"https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q={q}&limit={limit}")
+    url = f"https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q={q}&limit={limit}"
+    if lang:
+        url += f"&lang={urllib.parse.quote(lang)}"
+    data = _get(url)
     out = []
     for p in (data or {}).get("posts", []):
         au = p.get("author") or {}
         rec = p.get("record") or {}
         handle = au.get("handle", "")
         rkey = (p.get("uri") or "").rsplit("/", 1)[-1]
-        url = f"https://bsky.app/profile/{handle}/post/{rkey}" if handle and rkey else None
+        post_url = f"https://bsky.app/profile/{handle}/post/{rkey}" if handle and rkey else None
         out.append({
-            "source": "bluesky", "url": url,
+            "source": "bluesky", "url": post_url,
             "author": au.get("displayName") or handle,
             "content": (rec.get("text") or "")[:280],
             "location_text": (au.get("description") or "")[:60],
@@ -152,9 +156,9 @@ def fetch_bluesky(term, limit=20):
     return out
 
 
-def fetch_news(term, limit=20):
+def fetch_news(term, limit=20, hl="de", gl="DE", ceid="DE:de"):
     q = urllib.parse.quote(f'"{term.lstrip("#")}"')
-    url = f"https://news.google.com/rss/search?q={q}&hl=de&gl=DE&ceid=DE:de"
+    url = f"https://news.google.com/rss/search?q={q}&hl={hl}&gl={gl}&ceid={ceid}"
     raw = _get(url, as_json=False)
     root = ET.fromstring(raw)
     out = []
@@ -382,29 +386,61 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
         tags = conn.execute("SELECT id,term FROM hashtags WHERE active=1").fetchall()
     added, errors, per_source = 0, [], {s: 0 for s in sources}
     for ht in tags:
-        for src in sources:
-            try:
-                posts = FETCHERS[src](ht["term"], limit)
-            except Exception as e:  # WHY: eine Quelle/ein Tag down → andere weiter, Fehler gemeldet (nicht stumm)
-                errors.append(f"{src}:{ht['term']}: {type(e).__name__}: {e}")
-                continue
-            for p in posts:
-                if not p.get("url"):
+        tr = {}
+        try:
+            tr = ensure_translations(conn, ht["id"], ht["term"], _langs.FETCH_LANGS)
+        except Exception as e:  # WHY: translation failure must not abort fetching
+            errors.append(f"translations:{ht['term']}: {type(e).__name__}: {e}")
+
+        # Always include the German source term; append translated terms for other langs.
+        lang_terms = [("de", ht["term"])] + [
+            (code, tr[code]) for code in _langs.FETCH_LANGS if code in tr
+        ]
+
+        for lang, term in lang_terms:
+            gl = _langs.NEWS_REGION.get(lang, "DE")
+            for src in sources:
+                try:
+                    if src == "news":
+                        posts = fetch_news(term, limit, hl=lang, gl=gl, ceid=f"{gl}:{lang}")
+                    elif src == "bluesky":
+                        posts = fetch_bluesky(term, limit, lang=lang)
+                    else:
+                        posts = fetch_mastodon(term, limit)
+                except Exception as e:  # WHY: eine Quelle/ein Tag/eine Sprache down → andere weiter, Fehler gemeldet
+                    errors.append(f"{src}:{lang}:{ht['term']}: {type(e).__name__}: {e}")
                     continue
-                ll = geocode(p.get("location_text"))
-                if ll is None and src == "news":
-                    ll = _jitter(p["url"], DE_CENTER)  # News = DE, gestreut um Zentrum
-                elif ll is not None:
-                    ll = _jitter(p["url"], ll)
-                lat, lon = (ll if ll else (None, None))
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO hashtag_posts(hashtag_id,source,url,author,content,"
-                    "location_text,lat,lon,published,fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (ht["id"], p["source"], p["url"], p.get("author"), p.get("content"),
-                     p.get("location_text"), lat, lon, p.get("published"), now))
-                if cur.rowcount:
-                    added += 1
-                    per_source[src] = per_source.get(src, 0) + 1
+
+                lang_entry = _langs.by_code(lang)
+                lang_centroid = tuple(lang_entry["centroid"]) if lang_entry else DE_CENTER
+
+                for p in posts:
+                    if not p.get("url"):
+                        continue
+                    ll = geocode(p.get("location_text"))
+                    if ll is None:
+                        # WHY: spread fallback around the fetch-language's region instead
+                        # of always Germany — this distributes non-DE posts across the globe.
+                        ll = _jitter(p["url"], lang_centroid)
+                    else:
+                        ll = _jitter(p["url"], ll)
+                    lat, lon = ll
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO hashtag_posts"
+                        "(hashtag_id,source,url,author,content,"
+                        "location_text,lat,lon,published,fetched_at,lang_code,country)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (ht["id"], p["source"], p["url"], p.get("author"), p.get("content"),
+                         p.get("location_text"), lat, lon, p.get("published"), now,
+                         lang, gl))
+                    if cur.rowcount:
+                        added += 1
+                        per_source[src] = per_source.get(src, 0) + 1
+
+                # WHY: ~13× more calls than before; small stagger keeps us below
+                # rate-limit thresholds on public APIs without blocking for too long.
+                time.sleep(0.3)
+
     conn.commit()
     return {"added": added, "per_source": per_source, "tags": len(tags), "errors": errors}
 

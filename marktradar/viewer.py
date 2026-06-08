@@ -10,20 +10,21 @@ Watermark (meta.last_seen) markiert neue Meldungen.
 """
 import json
 import os
+import re
 import time
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, geo, hashtags, mapillary, organigram, query
+from marktradar import db, ddg_images, geo, hashtags, mapillary, organigram, query
 
 
 def _reskin(body):
     """Leitet Multi-View-Bilder an den Meshy-Service (app.linn.games) weiter. Der
     Service erstellt den Task + bekommt den Webhook; per callback_url meldet er uns das
     fertige GLB zurück (→ org_units.meshy_url)."""
-    url = os.getenv("MESHY_GEN_URL", "http://php-fpm/api/meshy/generate")
+    url = os.getenv("MESHY_GEN_URL", "http://web/api/meshy/generate")  # web=nginx (php-fpm ist FastCGI:9000, kein HTTP)
     tok = os.getenv("MCP_SERVICE_TOKEN", "")
     if not tok:
         return {"error": "MCP_SERVICE_TOKEN nicht gesetzt (in .env.mayring)"}
@@ -119,6 +120,21 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/org/scene":
                 _json(self, geo.scene(conn, int(q.get("id", ["0"])[0]),
                                       int(q.get("radius", ["320"])[0])))
+            elif u.path == "/api/org/photos":
+                row = conn.execute("SELECT name,address,traeger FROM org_units WHERE id=?",
+                                   (int(q.get("id", ["0"])[0]),)).fetchone()
+                if not row:
+                    _json(self, {"error": "unit not found"})
+                else:
+                    ort = ""
+                    if row["address"]:
+                        mm = re.search(r"\d{5}\s+([A-Za-zäöüÄÖÜß .-]+?)(?:,|$)", row["address"])
+                        ort = mm.group(1).strip() if mm else ""
+                    query = f"{row['name']} {ort or row['traeger'] or ''}".strip()
+                    try:
+                        _json(self, {"query": query, "results": ddg_images.search(query, n=18)})
+                    except Exception as e:
+                        _json(self, {"error": f"{type(e).__name__}: {e}", "query": query})
             elif u.path == "/api/org/streetview":
                 row = conn.execute("SELECT name,lat,lon FROM org_units WHERE id=?",
                                    (int(q.get("id", ["0"])[0]),)).fetchone()
@@ -348,8 +364,10 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 #reskinov{position:absolute;inset:0;background:#05080fe8;z-index:7;display:flex;align-items:center;justify-content:center}
 .rkbox{background:var(--pan);border:1px solid var(--ln);border-radius:10px;padding:18px;width:min(740px,92vw)}
 .rkhd{display:flex;flex-direction:column;gap:3px;margin-bottom:12px}.rkhd b{color:#fff;font-size:14px}
-.rkthumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
-.rkthumbs img{width:100%;border-radius:6px;border:1px solid var(--ln);display:block}
+.rktabs{display:flex;gap:6px;margin-bottom:10px}
+.rkthumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;max-height:46vh;overflow:auto}
+.rkthumbs img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;border:1px solid var(--ln);display:block;cursor:pointer}
+.rkthumbs img.rksel{outline:3px solid #2ecc71;outline-offset:-1px}
 .rkrow{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
 #rkstatus{margin-top:8px}
 </style></head><body>
@@ -461,12 +479,16 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
   <div id=scload class=scload>lädt OSM-Gebäude…</div>
   <div id=reskinov class=hide>
     <div class=rkbox>
-      <div class=rkhd><b>Reskin · Multi-View des Gebäudes</b><span class=muted>4 Ansichten unseres OSM-Modells → Meshy (mit Prompt). Erst Qualität prüfen.</span></div>
+      <div class=rkhd><b>Reskin · Eingabe für Meshy</b><span class=muted id=rkhint>OSM-Modell aus 4 Winkeln — ODER echte Fotos suchen. Erst Qualität prüfen, dann senden.</span></div>
+      <div class=rktabs>
+        <span class="scbtn on" id=rkmode_osm onclick="setRkMode('osm')">🧊 OSM-Modell</span>
+        <span class=scbtn id=rkmode_photo onclick="setRkMode('photo')">🔍 Echte Fotos (DDG)</span>
+      </div>
       <div id=rkthumbs class=rkthumbs></div>
       <input id=rkprompt class=htin value="detailed futuristic sci-fi cargo-plane pilot school building, weathered metal, neon">
       <div class=rkrow>
         <button class=btn id=rkcancel>abbrechen</button>
-        <button class=btn id=rkrecap>↻ neu rendern</button>
+        <button class=btn id=rkrecap>↻ neu</button>
         <button class=btn id=rksend>→ an Meshy senden</button>
       </div>
       <div id=rkstatus class=muted></div>
@@ -830,15 +852,31 @@ function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
   H.scene.remove(capLights);
   foc.material=oMat;H.scene.background=oBg;H.scene.fog=oFog;hidden.forEach(([o,v])=>o.visible=v);H.renderer.setSize(oW,oH,false);
   return imgs;}
-let RKIMGS=[];
+let RKIMGS=[],RKMODE='osm',RKSEL=[];
+function setRkMode(m){RKMODE=m;$('rkmode_osm').classList.toggle('on',m==='osm');$('rkmode_photo').classList.toggle('on',m==='photo');
+  if(m==='osm')renderOsmThumbs();else loadPhotos();}
+function renderOsmThumbs(){try{RKIMGS=captureMultiview();}catch(e){RKIMGS=[];console.error('capture',e);}
+  $('rkhint').textContent='Unser OSM-Modell aus 4 Winkeln (Geometrie). Stil macht der Prompt.';
+  $('rkthumbs').innerHTML=RKIMGS.map(u=>`<img src="${u}">`).join('')||'<span class=muted>kein Fokus-Gebäude — anderes Haus probieren</span>';
+  $('rkstatus').textContent=RKIMGS.length?(RKIMGS.length+' Ansichten gerendert'):'';}
+async function loadPhotos(){RKSEL=[];$('rkhint').textContent='Echte Fotos (DuckDuckGo) — bis zu 4 anklicken (grün = gewählt). Qualität prüfen!';
+  $('rkthumbs').innerHTML='<span class=muted>suche Fotos…</span>';$('rkstatus').textContent='';
+  let d;try{d=await j('api/org/photos?id='+SCENE.unit);}catch(e){d={error:String(e)};}
+  if(!d||d.error){$('rkthumbs').innerHTML='<span class=muted>Fehler: '+esc((d&&d.error)||'?')+'</span>';return;}
+  const rs=(d.results||[]);
+  $('rkthumbs').innerHTML=rs.map(r=>`<img src="${esc(r.thumbnail||r.image)}" data-full="${esc(r.image)}" title="${esc(r.title||'')} · ${r.width}x${r.height}" onclick="toggleSel(this)">`).join('')||'<span class=muted>keine Fotos gefunden</span>';
+  $('rkstatus').textContent=rs.length+' Treffer für „'+esc(d.query||'')+'" — wähle die besten 3-4';}
+function toggleSel(el){const u=el.dataset.full;const i=RKSEL.indexOf(u);
+  if(i>=0){RKSEL.splice(i,1);el.classList.remove('rksel');}
+  else{if(RKSEL.length>=4){return;}RKSEL.push(u);el.classList.add('rksel');}
+  $('rkstatus').textContent=RKSEL.length+'/4 gewählt';}
 function openReskin(){if(!SCENE||!SCENE.focal){console.warn('kein Fokus-Gebäude');return;}if(SCENE.controls.isLocked)SCENE.controls.unlock();
-  try{RKIMGS=captureMultiview();}catch(e){RKIMGS=[];console.error('capture',e);}
-  $('rkthumbs').innerHTML=RKIMGS.map(u=>`<img src="${u}">`).join('')||'<span class=muted>kein Fokus-Gebäude an dieser Adresse — anderes Haus probieren</span>';
-  $('rkstatus').textContent=RKIMGS.length?(RKIMGS.length+' Ansichten gerendert — Qualität prüfen, dann senden'):'';
-  $('reskinov').classList.remove('hide');}
-async function sendReskin(){if(!RKIMGS.length)return;const st=$('rkstatus');st.textContent='sende '+RKIMGS.length+' Ansichten an Meshy…';$('rksend').disabled=true;
-  try{const r=await (await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:RKIMGS})).json();
-    st.innerHTML=r.error?('Fehler: '+esc(r.error)):('✓ Meshy-Task <b>'+esc(r.task_id||r.job_id||'?')+'</b> gestartet — GLB kommt per Webhook in MinIO/Volume.');
+  $('reskinov').classList.remove('hide');setRkMode('osm');}
+async function sendReskin(){const imgs=RKMODE==='photo'?RKSEL:RKIMGS;
+  if(!imgs.length){$('rkstatus').textContent=RKMODE==='photo'?'erst Fotos wählen':'kein Modell';return;}
+  const st=$('rkstatus');st.textContent='sende '+imgs.length+(RKMODE==='photo'?' Fotos':' Ansichten')+' an Meshy…';$('rksend').disabled=true;
+  try{const r=await (await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:imgs})).json();
+    st.innerHTML=r.error?('Fehler: '+esc(r.error)):('✓ Meshy-Task <b>'+esc(r.task_id||r.job_id||'?')+'</b> gestartet — GLB kommt per Webhook.');
   }catch(e){st.textContent='Fehler: '+e;}finally{$('rksend').disabled=false;}}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
@@ -848,7 +886,7 @@ $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
 $('scexit').onclick=closeScene;
 $('screskin').onclick=openReskin;
 $('rkcancel').onclick=()=>$('reskinov').classList.add('hide');
-$('rkrecap').onclick=openReskin;
+$('rkrecap').onclick=()=>setRkMode(RKMODE);
 $('rksend').onclick=sendReskin;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&SCENE&&!SCENE.controls.isLocked)closeScene();});
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{

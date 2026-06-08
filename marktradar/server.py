@@ -38,6 +38,12 @@ class _JWTVerifier(TokenVerifier):
         claims = auth.verify(token)
         if claims is None:
             return None
+        if claims and os.getenv("PFLEGE_LOG_CLAIMS") == "1":
+            import sys
+            print(f"[auth] OK token iss={claims.get('iss')} aud={claims.get('aud')} "
+                  f"sub={claims.get('sub')} azp={claims.get('azp')} "
+                  f"scope={claims.get('scope')} keys={list(claims.keys())}",
+                  file=sys.stderr, flush=True)
         raw = claims.get("scope") or claims.get("scopes") or []
         scopes = raw.split() if isinstance(raw, str) else list(raw)
         return AccessToken(

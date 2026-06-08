@@ -33,13 +33,18 @@ PUBLIC_KEY = _load_public_key()
 
 
 def verify(token: str) -> dict | None:
-    """dict bei gültigem Token; None bei ungültig; {} wenn Auth deaktiviert (kein Key)."""
+    """dict bei gültigem Token; None bei ungültig; {} wenn Auth deaktiviert (kein Key).
+    Audience wird nur geprüft, wenn PFLEGE_JWT_AUDIENCE gesetzt ist (sonst akzeptiert
+    der Server jedes vom zentralen AS signierte, gültige Token — Issuer/Signatur/exp
+    werden immer geprüft)."""
     if not PUBLIC_KEY:
         return {}
     import jwt
     try:
-        return jwt.decode(token, PUBLIC_KEY, algorithms=["RS256"],
-                          issuer=ISSUER, audience=AUDIENCE)
+        return jwt.decode(
+            token, PUBLIC_KEY, algorithms=["RS256"], issuer=ISSUER,
+            audience=AUDIENCE or None,
+            options={"verify_aud": bool(AUDIENCE)})
     except Exception:
         return None
 

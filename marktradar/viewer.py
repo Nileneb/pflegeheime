@@ -19,6 +19,25 @@ from urllib.parse import urlparse, parse_qs
 
 from marktradar import db, ddg_images, geo, hashtags, mapillary, organigram, query, sources
 
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_LANGGEO_CACHE = None
+
+
+def _langgeo():
+    """Countries-GeoJSON + ISO_A2→lang mapping for the soft language overlay.
+
+    Cached after first read — the geojson is ~820 KB, never re-read per request.
+    Kept out of /api/hashtags so that response stays lean.
+    """
+    global _LANGGEO_CACHE
+    if _LANGGEO_CACHE is None:
+        with open(os.path.join(_DATA_DIR, "ne_110m_admin_0_countries.geojson"), encoding="utf-8") as f:
+            gj = json.load(f)
+        with open(os.path.join(_DATA_DIR, "country_language.json"), encoding="utf-8") as f:
+            cl = json.load(f)
+        _LANGGEO_CACHE = {"geojson": gj, "country_language": cl}
+    return _LANGGEO_CACHE
+
 
 def _reskin(body):
     """Leitet Multi-View-Bilder an den Meshy-Service (app.linn.games) weiter. Der
@@ -141,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn, int(q.get("recent_days", ["30"])[0]))})
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
+            elif u.path == "/api/langgeo":
+                _json(self, _langgeo())
             elif u.path == "/api/hashtags/_debug_extract":
                 _json(self, hashtags.debug_extract(conn, int(q.get("n", ["3"])[0])))
             elif u.path == "/api/org/scene":
@@ -388,6 +409,15 @@ svg text{font-family:inherit}
 .globewrap{display:grid;grid-template-columns:1fr 330px;gap:14px;align-items:start}
 #globecanvas{width:100%;height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
 #globecanvas:active{cursor:grabbing}
+#globewrap{position:relative}
+#langlegend{position:absolute;left:10px;bottom:10px;width:158px;background:#0b1220e6;border:1px solid var(--ln);border-radius:7px;font-size:10px;backdrop-filter:blur(3px);z-index:5}
+#langlegend.hide{display:none}
+.lglh{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--ln);color:var(--mut);letter-spacing:.5px}
+.lglx{background:none;border:none;color:var(--mut);cursor:pointer;font-size:12px;line-height:1;padding:0 2px}
+#langlegbody{max-height:260px;overflow-y:auto;padding:4px 6px;display:grid;grid-template-columns:1fr 1fr;gap:1px 8px}
+#langlegbody.collapsed{display:none}
+.lgrow{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lgsw{width:10px;height:10px;border-radius:2px;flex:0 0 auto;border:1px solid #ffffff22}
 .htadd{display:flex;gap:6px;margin-bottom:10px}
 .htin{flex:1;background:#0c121c;border:1px solid var(--ln);color:var(--fg);border-radius:5px;padding:5px 8px;font:inherit;font-size:11px}
 input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radius:5px;background:#0c121c;padding:1px;cursor:pointer}
@@ -496,8 +526,11 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 <section id=globe class=hide>
   <div class=globewrap>
     <div class=panel gpanel>
-      <div class=ph><span>HASHTAG-GLOBUS · ECHTE POSTS (Mastodon · Bluesky · News) · Drag = drehen · Klick Punkt = Quelle</span><span class=ph-r><button class=btn id=arctog title="Ko-Vorkommen-Arcs ein/aus">⌇ Arcs: an</button><span class=muted id=globestat></span></span></div>
-      <div id=globecanvas></div>
+      <div class=ph><span>HASHTAG-GLOBUS · ECHTE POSTS (Mastodon · Bluesky · News) · Drag = drehen · Klick Punkt = Quelle</span><span class=ph-r><button class=btn id=langtog title="Sprach-Overlay ein/aus">🗣 Sprachen: an</button><button class=btn id=arctog title="Ko-Vorkommen-Arcs ein/aus">⌇ Arcs: an</button><span class=muted id=globestat></span></span></div>
+      <div id=globewrap>
+        <div id=globecanvas></div>
+        <div id=langlegend class=hide><div class=lglh><span>Sprachen</span><button class=lglx id=lglx title="ein-/ausklappen">▾</button></div><div id=langlegbody></div></div>
+      </div>
     </div>
     <div>
       <div class=panel>
@@ -694,11 +727,39 @@ function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180
 function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.style.display='none';
   if(h){cancelAnimationFrame(h.raf);
     if(h.arcs)h.arcs.forEach(o=>{o.tube.geometry.dispose();o.tubeMat.dispose();o.glow.geometry.dispose();o.glowMat.dispose();});
+    if(h.langTex)h.langTex.dispose();if(h.langMat)h.langMat.dispose();if(h.langGeo)h.langGeo.dispose();
     if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
 
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
-let HTDATA=null, GLOBE=null, ARCS_ON=true;
+let HTDATA=null, GLOBE=null, ARCS_ON=true, LANG_ON=true, LANGGEO=null;
+// Soft language overlay: paint country polygons by language color onto an equirect
+// canvas, blur it, drape as a translucent texture on a sphere slightly above earth.
+async function ensureLangGeo(){if(LANGGEO===null){try{LANGGEO=await j('api/langgeo');}catch(e){console.warn('langgeo load failed',e);LANGGEO=false;}}return LANGGEO;}
+function buildLangCanvas(geo,clMap,langs){
+  const W=2048,H=1024;
+  const code2col={};(langs||[]).forEach(l=>{code2col[l.code]=l.color;});
+  const scratch=document.createElement('canvas');scratch.width=W;scratch.height=H;
+  const sc=scratch.getContext('2d');sc.clearRect(0,0,W,H);
+  const X=lon=>(lon+180)/360*W, Y=lat=>(90-lat)/180*H;   // matches ll2v / SphereGeometry UVs
+  function ringPath(ring){sc.beginPath();ring.forEach((pt,i)=>{const x=X(pt[0]),y=Y(pt[1]);i?sc.lineTo(x,y):sc.moveTo(x,y);});sc.closePath();}
+  (geo.features||[]).forEach(f=>{
+    const pr=f.properties||{};
+    const iso=(pr.ISO_A2_EH&&pr.ISO_A2_EH!=='-99')?pr.ISO_A2_EH:pr.ISO_A2;  // EH first (FR/NO/XK), fallback catches Taiwan (CN-TW)
+    const code=clMap[iso];const col=code&&code2col[code];
+    if(!col)return;                                       // no mapping (e.g. ISO '-99') → skip
+    sc.fillStyle=col;
+    const g=f.geometry;if(!g)return;
+    const polys=g.type==='Polygon'?[g.coordinates]:g.type==='MultiPolygon'?g.coordinates:[];
+    polys.forEach(poly=>{poly.forEach(ring=>ringPath(ring));sc.fill('evenodd');});
+  });
+  const blurred=document.createElement('canvas');blurred.width=W;blurred.height=H;
+  const bc=blurred.getContext('2d');bc.filter='blur(18px)';bc.drawImage(scratch,0,0);bc.filter='none';
+  return blurred;
+}
+function renderLangLegend(langs){const body=$('langlegbody');if(!body)return;
+  body.innerHTML=(langs||[]).map(l=>`<div class=lgrow title="${esc(l.native||'')}"><span class=lgsw style="background:${l.color}"></span>${esc(l.name)}</div>`).join('');
+  $('langlegend').classList.toggle('hide',!LANG_ON);}
 async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();renderTrends();initGlobe(HTDATA.points);
   $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
 function renderTrends(){const pr=(HTDATA&&HTDATA.trends)||[];$('httrends').className=pr.length?'':'muted';
@@ -761,6 +822,18 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     t=>{mat.map=t;mat.color.set(0xffffff);mat.needsUpdate=true;},undefined,()=>{});
   scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(1.003,24,16)),
     new THREE.LineBasicMaterial({color:0x2a4a7a,transparent:true,opacity:0.13})));
+  // ── Weiches Sprach-Overlay: translucent language zones above the blue-marble earth ──
+  let langMesh=null,langTex=null,langMat=null,langGeo=null;
+  (async function buildLangOverlay(){
+    const lg=await ensureLangGeo();if(!lg||!lg.geojson)return;if(GLOBE!==H)return;  // stale (scene re-inited)
+    const cv=buildLangCanvas(lg.geojson,lg.country_language||{},(HTDATA&&HTDATA.languages)||[]);
+    langTex=new THREE.CanvasTexture(cv);langTex.needsUpdate=true;  // flipY default → aligns with blue-marble + ll2v
+    langGeo=new THREE.SphereGeometry(1.003,96,64);
+    langMat=new THREE.MeshBasicMaterial({map:langTex,transparent:true,opacity:0.22,depthWrite:false,blending:THREE.NormalBlending});
+    langMesh=new THREE.Mesh(langGeo,langMat);langMesh.visible=LANG_ON;scene.add(langMesh);
+    H.langMesh=langMesh;H.langTex=langTex;H.langMat=langMat;H.langGeo=langGeo;
+    renderLangLegend((HTDATA&&HTDATA.languages)||[]);
+  })();
   const group=new THREE.Group();scene.add(group);
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
   const pgeo=new THREE.SphereGeometry(1,8,8);
@@ -1045,6 +1118,10 @@ $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 $('htrefresh').onclick=refreshHt;
 $('arctog').onclick=()=>{ARCS_ON=!ARCS_ON;$('arctog').textContent='⌇ Arcs: '+(ARCS_ON?'an':'aus');
   if(GLOBE&&GLOBE.arcGroup)GLOBE.arcGroup.visible=ARCS_ON;};
+$('langtog').onclick=()=>{LANG_ON=!LANG_ON;$('langtog').textContent='🗣 Sprachen: '+(LANG_ON?'an':'aus');
+  if(GLOBE&&GLOBE.langMesh)GLOBE.langMesh.visible=LANG_ON;
+  $('langlegend').classList.toggle('hide',!LANG_ON);};
+$('lglx').onclick=()=>{const b=$('langlegbody');b.classList.toggle('collapsed');$('lglx').textContent=b.classList.contains('collapsed')?'▸':'▾';};
 $('htaddbtn').onclick=addHt;
 $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
 $('scexit').onclick=closeScene;

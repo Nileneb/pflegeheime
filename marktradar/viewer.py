@@ -225,6 +225,11 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, hashtags.tag_articles(
                     conn, None, auto_create=bool(b.get("auto_create", True)),
                     limit=int(b.get("limit", 400))))
+            elif path == "/api/sources/seed":
+                # idempotent (INSERT OR IGNORE): zieht neue Seed-Quellen in die
+                # bestehende Prod-DB (entrypoint-Seed läuft nur bei leerer DB).
+                _json(self, {"added": sources.seed(conn), "total": conn.execute(
+                    "SELECT count(*) c FROM sources").fetchone()["c"]})
             elif path == "/api/geocode_org":
                 b = self._body()
                 _json(self, geo.geocode_units(conn, b.get("traeger", "Bergische Diakonie"),

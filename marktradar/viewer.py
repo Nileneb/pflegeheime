@@ -295,6 +295,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .sclock{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f1622dd;border:1px solid var(--accent);color:#fff;padding:14px 26px;border-radius:10px;font-size:15px;cursor:pointer;z-index:4}
 .scload{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:var(--mut);font-size:12px;z-index:4}
 .schide{display:none}
+#org3dtip{position:fixed;display:none;z-index:600;background:#0f1622ee;border:1px solid var(--ln);border-radius:6px;padding:5px 9px;font-size:11px;color:#fff;pointer-events:none;max-width:240px}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -520,7 +521,8 @@ function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antia
   r.setPixelRatio(Math.min(2,devicePixelRatio));r.setSize(el.clientWidth,el.clientHeight||600);el.appendChild(r.domElement);return r;}
 function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180;
   return new THREE.Vector3(-r*Math.sin(phi)*Math.cos(th),r*Math.cos(phi),r*Math.sin(phi)*Math.sin(th));}
-function disposeScene(h){if(h){cancelAnimationFrame(h.raf);if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
+function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.style.display='none';
+  if(h){cancelAnimationFrame(h.raf);if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
 
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
@@ -638,19 +640,36 @@ function renderOrg3D(root){disposeScene(ORG3D);const el=$('org3d');const rendere
   scene.add(new THREE.AmbientLight(0xffffff,0.85));
   const L=layoutTree(root);const leaves=Math.max(1,L.leaves);const sgeo=new THREE.SphereGeometry(1,16,16);const seg=[];
   const pos=n=>{const a=(n._x/leaves)*Math.PI*2,r=n._d*72;return new THREE.Vector3(r*Math.cos(a),-n._d*82+150,r*Math.sin(a));};
-  (function place(n){const p=pos(n);const r=n._d===0?11:n._d===1?7.5:n._d===2?5:3.4;
-    const m=new THREE.Mesh(sgeo,new THREE.MeshBasicMaterial({color:new THREE.Color(n.color||'#46527a')}));
-    m.position.copy(p);m.scale.setScalar(r);m.userData.unit=n;scene.add(m);
+  const nodeMeshes=[];
+  // 1:1 zum 2D-Org: JEDER Org-Knoten ist auch hier ein Punkt; Einrichtungen grün +
+  // größer + klickbar (öffnet die begehbare 3D-Welt) — wie die grünen Boxen im Flussdiagramm.
+  (function place(n){const p=pos(n);const ein=n.type==='einrichtung';
+    const r=ein?6:(n._d===0?11:n._d===1?7.5:n._d===2?5:3.4);
+    const m=new THREE.Mesh(sgeo,new THREE.MeshBasicMaterial({color:new THREE.Color(ein?'#67d98b':(n.color||'#46527a'))}));
+    m.position.copy(p);m.scale.setScalar(r);m.userData={unit:n,ein,base:r,phase:Math.abs(hashStr(n.name||''))%628/100};
+    scene.add(m);nodeMeshes.push(m);
     (n.children||[]).forEach(ch=>{const cp=pos(ch);seg.push(p.x,p.y,p.z,cp.x,cp.y,cp.z);place(ch);});})(root);
   const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(seg,3));
   scene.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x2a3550,transparent:true,opacity:0.55})));
-  // Klick auf Einrichtungs-Knoten → begehbare 3D-Welt
+  // Tooltip + Hover/Click-Raycast
+  let tip=$('org3dtip');if(!tip){tip=document.createElement('div');tip.id='org3dtip';document.body.appendChild(tip);}
   const ray=new THREE.Raycaster(),mo=new THREE.Vector2();
-  renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
+  const pick=ev=>{const r=renderer.domElement.getBoundingClientRect();
     mo.x=((ev.clientX-r.left)/r.width)*2-1;mo.y=-((ev.clientY-r.top)/r.height)*2+1;ray.setFromCamera(mo,camera);
-    const hit=ray.intersectObjects(scene.children).find(o=>o.object.userData.unit);
-    if(hit){const n=hit.object.userData.unit;if(n.type==='einrichtung')openScene3d(n);}});
-  const H={renderer};(function loop(){H.raf=requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();ORG3D=H;}
+    return ray.intersectObjects(nodeMeshes)[0];};
+  renderer.domElement.addEventListener('pointermove',ev=>{const h=pick(ev);
+    if(h){const n=h.object.userData.unit;const ein=h.object.userData.ein;
+      tip.style.display='block';tip.style.left=(ev.clientX+12)+'px';tip.style.top=(ev.clientY+12)+'px';
+      tip.innerHTML=`${esc((n.icon?n.icon+' ':'')+n.name)}${ein?' <span style="color:#67d98b">→ 3D-Welt</span>':''}`;
+      renderer.domElement.style.cursor=ein?'pointer':'default';}
+    else{tip.style.display='none';renderer.domElement.style.cursor='default';}});
+  renderer.domElement.addEventListener('pointerleave',()=>{tip.style.display='none';});
+  renderer.domElement.addEventListener('click',ev=>{const h=pick(ev);
+    if(h&&h.object.userData.ein)openScene3d(h.object.userData.unit);});
+  const clock=new THREE.Clock();const H={renderer};
+  (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
+    nodeMeshes.forEach(m=>{if(m.userData.ein)m.scale.setScalar(m.userData.base*(1+0.12*Math.sin(t*2.5+m.userData.phase)));});
+    controls.update();renderer.render(scene,camera);})();ORG3D=H;}
 
 // ── 3D-OSM-BURNER: begehbare Welt der Einrichtung (Overpass-Gebäude, WASD, Stile) ──
 let SCENE=null;
@@ -729,6 +748,7 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
 });
 (function(){const h=(location.hash||'').replace('#','');
   if(h.indexOf('scene=')===0){openScene3d({id:+h.split('=')[1]});return;}
+  if(h==='org3d'){document.querySelector('.tab[data-t=org]').click();setOrgMode('d3');return;}
   const t=h&&document.querySelector('.tab[data-t='+h+']');if(t)t.click();})();
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 

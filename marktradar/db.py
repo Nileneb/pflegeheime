@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS hashtag_posts (
     hashtag_id INTEGER REFERENCES hashtags(id),
     source TEXT, url TEXT, author TEXT, content TEXT,
     location_text TEXT, lat REAL, lon REAL, published TEXT, fetched_at TEXT,
+    lang_code TEXT, country TEXT,
+    -- WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE deduplicates cross-language duplicate URLs
+    -- keeping the first (DE) lang_code attribution; intentional for geo-display consistency.
     UNIQUE(hashtag_id, url)
 );
 CREATE TABLE IF NOT EXISTS article_hashtags (

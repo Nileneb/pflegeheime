@@ -26,6 +26,9 @@ _log = logging.getLogger(__name__)
 UA = "pflege-marktradar/1.0 (+https://pflege.linn.games)"
 TIMEOUT = 12
 
+# WHY: env-override lets CI/tests set 0 to skip rate-limit staggering entirely.
+_FETCH_DELAY = float(os.getenv("PFLEGE_FETCH_DELAY", "0.3"))
+
 # Hashtag-Seed aus dem bisherigen DISCOURSE_TERMS-Set, mit festen Farben.
 SEED = [
     ("Pflegereform", "#5b8def"), ("Pflegenotstand", "#ff4d4d"), ("Tariftreue", "#2ecc71"),
@@ -76,7 +79,7 @@ GAZ = {
     "south africa": (-30.0, 25.0), "egypt": (26.8, 30.8), "nigeria": (9.1, 8.7),
     "singapore": (1.35, 103.82), "dubai": (25.2, 55.27), "uae": (24.0, 54.0),
 }
-DE_CENTER = (51.16, 10.45)
+DE_CENTER = tuple(_langs.by_code("de")["centroid"])  # WHY: unified constant — avoids divergence with languages.LANGUAGES["de"]["centroid"]
 
 
 def _get(url, as_json=True):
@@ -174,8 +177,6 @@ def fetch_news(term, limit=20, hl="de", gl="DE", ceid="DE:de"):
         })
     return out
 
-
-FETCHERS = {"mastodon": fetch_mastodon, "bluesky": fetch_bluesky, "news": fetch_news}
 
 
 # ── CRUD ──
@@ -399,6 +400,8 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
 
         for lang, term in lang_terms:
             gl = _langs.NEWS_REGION.get(lang, "DE")
+            lang_entry = _langs.by_code(lang)
+            lang_centroid = tuple(lang_entry["centroid"]) if lang_entry else DE_CENTER
             for src in sources:
                 try:
                     if src == "news":
@@ -406,13 +409,12 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
                     elif src == "bluesky":
                         posts = fetch_bluesky(term, limit, lang=lang)
                     else:
+                        # WHY: for mastodon, country is the language's representative region
+                        # (NEWS_REGION), not the post's true origin — approximation for geo-display.
                         posts = fetch_mastodon(term, limit)
                 except Exception as e:  # WHY: eine Quelle/ein Tag/eine Sprache down → andere weiter, Fehler gemeldet
                     errors.append(f"{src}:{lang}:{ht['term']}: {type(e).__name__}: {e}")
                     continue
-
-                lang_entry = _langs.by_code(lang)
-                lang_centroid = tuple(lang_entry["centroid"]) if lang_entry else DE_CENTER
 
                 for p in posts:
                     if not p.get("url"):
@@ -425,6 +427,8 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
                     else:
                         ll = _jitter(p["url"], ll)
                     lat, lon = ll
+                    # WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE deduplicates cross-language
+                    # duplicate URLs — the post keeps the first (DE) lang_code attribution; intentional.
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO hashtag_posts"
                         "(hashtag_id,source,url,author,content,"
@@ -437,9 +441,10 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
                         added += 1
                         per_source[src] = per_source.get(src, 0) + 1
 
-                # WHY: ~13× more calls than before; small stagger keeps us below
-                # rate-limit thresholds on public APIs without blocking for too long.
-                time.sleep(0.3)
+            # WHY: fire once per language (not per source) — ~13× more langs than before;
+            # staggering per-source would add ~3× unnecessary sleep (~21 min for 109 hashtags).
+            if _FETCH_DELAY:
+                time.sleep(_FETCH_DELAY)
 
     conn.commit()
     return {"added": added, "per_source": per_source, "tags": len(tags), "errors": errors}

@@ -377,3 +377,59 @@ def test_de_fallback_still_uses_de_center(conn, monkeypatch):
     de_lat, de_lon = hashtags.DE_CENTER
     assert abs(row["lat"] - de_lat) < 2.5
     assert abs(row["lon"] - de_lon) < 2.5
+
+
+# ── sleep placement: once per language, not per source ───────────────────────
+
+def test_sleep_fires_once_per_language_not_per_source(conn, monkeypatch):
+    """time.sleep must be called exactly len(lang_terms) times — once per language,
+    not once per (language × source)."""
+    conn.execute(
+        "INSERT INTO hashtags(term,color,active,created) VALUES ('Pflegereform','#5b8def',1,'2026-01-01')"
+    )
+    conn.commit()
+
+    # Two translated languages → lang_terms = [("de", ...), ("en", ...), ("fr", ...)] = 3
+    translations = {"en": "Nursing Reform", "fr": "Réforme des soins"}
+    monkeypatch.setattr(hashtags, "ensure_translations", lambda *a, **kw: translations)
+    monkeypatch.setattr(hashtags, "fetch_news", lambda *a, **kw: [])
+    monkeypatch.setattr(hashtags, "fetch_bluesky", lambda *a, **kw: [])
+    monkeypatch.setattr(hashtags, "fetch_mastodon", lambda *a, **kw: [])
+
+    sleep_calls = []
+    monkeypatch.setattr(hashtags.time, "sleep", lambda s: sleep_calls.append(s))
+    # Ensure _FETCH_DELAY is non-zero so the sleep branch is entered
+    monkeypatch.setattr(hashtags, "_FETCH_DELAY", 0.3)
+
+    hashtags.refresh(conn, sources=("mastodon", "bluesky", "news"), limit=5)
+
+    # 1 hashtag × 3 languages (de + en + fr) = 3 sleep calls
+    expected_lang_count = 1 + len(translations)  # de + translated
+    assert len(sleep_calls) == expected_lang_count, (
+        f"Expected {expected_lang_count} sleep calls (once per language), "
+        f"got {len(sleep_calls)} — sleep may still be inside the sources loop"
+    )
+
+
+def test_fetch_delay_zero_disables_sleep(conn, monkeypatch):
+    """PFLEGE_FETCH_DELAY=0 must result in zero sleep calls."""
+    conn.execute(
+        "INSERT INTO hashtags(term,color,active,created) VALUES ('Pflegereform','#5b8def',1,'2026-01-01')"
+    )
+    conn.commit()
+
+    monkeypatch.setattr(hashtags, "ensure_translations",
+                        lambda *a, **kw: {"en": "Nursing Reform"})
+    monkeypatch.setattr(hashtags, "fetch_news", lambda *a, **kw: [])
+    monkeypatch.setattr(hashtags, "fetch_bluesky", lambda *a, **kw: [])
+    monkeypatch.setattr(hashtags, "fetch_mastodon", lambda *a, **kw: [])
+
+    sleep_calls = []
+    monkeypatch.setattr(hashtags.time, "sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr(hashtags, "_FETCH_DELAY", 0.0)
+
+    hashtags.refresh(conn, sources=("news",), limit=5)
+
+    assert sleep_calls == [], (
+        f"Expected no sleep calls when _FETCH_DELAY=0, got {sleep_calls}"
+    )

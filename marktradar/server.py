@@ -10,14 +10,27 @@ TokenVerifier (RS256) hier. Ohne Key → keine Auth (stdio/dev).
 """
 import os
 
+from urllib.parse import urlparse
+
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.transport_security import TransportSecuritySettings
 
 from marktradar import auth, db, ingest, query
 
 OAUTH_ISSUER = os.getenv("PFLEGE_OAUTH_ISSUER", "https://app.linn.games")
 PUBLIC_URL = os.getenv("PFLEGE_PUBLIC_URL", "https://pflege.linn.games")
+_HOST = urlparse(PUBLIC_URL).hostname or "pflege.linn.games"
+
+# WHY: hinter nginx (einziger Ingress, fixes Host-Routing) + OAuth/JWT ist der
+# DNS-Rebinding-Schutz (Browser-Angriffsmodell) nicht relevant und blockt sonst
+# den proxied Host (421 Invalid Host). Per PFLEGE_DNS_REBIND_PROTECT=1 reaktivierbar.
+_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=os.getenv("PFLEGE_DNS_REBIND_PROTECT", "0") == "1",
+    allowed_hosts=[_HOST, f"{_HOST}:443", "127.0.0.1", "localhost"],
+    allowed_origins=[PUBLIC_URL, f"https://{_HOST}"],
+)
 
 
 class _JWTVerifier(TokenVerifier):
@@ -47,7 +60,7 @@ if auth.PUBLIC_KEY:  # Prod: OAuth-Resource-Server aktiv
         ),
     )
 
-mcp = FastMCP("pflege-marktradar", **_auth_kwargs)
+mcp = FastMCP("pflege-marktradar", transport_security=_TRANSPORT_SECURITY, **_auth_kwargs)
 _conn = db.connect()
 db.bootstrap(_conn)
 

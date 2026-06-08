@@ -9,8 +9,10 @@ Watermark (meta.last_seen) markiert neue Meldungen.
     PFLEGE_VIEWER_PORT=9000 python -m marktradar.viewer
 """
 import json
+import logging
 import os
 import re
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -21,6 +23,7 @@ from marktradar import db, ddg_images, geo, hashtags, mapillary, organigram, que
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 _LANGGEO_CACHE = None
+_LANGGEO_LOCK = threading.Lock()
 
 
 def _langgeo():
@@ -28,13 +31,24 @@ def _langgeo():
 
     Cached after first read — the geojson is ~820 KB, never re-read per request.
     Kept out of /api/hashtags so that response stays lean.
+
+    Raises RuntimeError on I/O failure so the caller can return a proper error
+    response instead of dropping the connection.
     """
     global _LANGGEO_CACHE
-    if _LANGGEO_CACHE is None:
-        with open(os.path.join(_DATA_DIR, "ne_110m_admin_0_countries.geojson"), encoding="utf-8") as f:
-            gj = json.load(f)
-        with open(os.path.join(_DATA_DIR, "country_language.json"), encoding="utf-8") as f:
-            cl = json.load(f)
+    if _LANGGEO_CACHE is not None:
+        return _LANGGEO_CACHE
+    with _LANGGEO_LOCK:
+        if _LANGGEO_CACHE is not None:  # another thread populated it while we waited
+            return _LANGGEO_CACHE
+        try:
+            with open(os.path.join(_DATA_DIR, "ne_110m_admin_0_countries.geojson"), encoding="utf-8") as f:
+                gj = json.load(f)
+            with open(os.path.join(_DATA_DIR, "country_language.json"), encoding="utf-8") as f:
+                cl = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning("langgeo: failed to load data files: %s", exc)
+            raise RuntimeError(f"langgeo data unavailable: {exc}") from exc
         _LANGGEO_CACHE = {"geojson": gj, "country_language": cl}
     return _LANGGEO_CACHE
 
@@ -161,7 +175,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
             elif u.path == "/api/langgeo":
-                _json(self, _langgeo())
+                try:
+                    _json(self, _langgeo())
+                except RuntimeError as exc:
+                    _json(self, {"error": str(exc)}, 503)
             elif u.path == "/api/hashtags/_debug_extract":
                 _json(self, hashtags.debug_extract(conn, int(q.get("n", ["3"])[0])))
             elif u.path == "/api/org/scene":
@@ -745,7 +762,7 @@ function buildLangCanvas(geo,clMap,langs){
   function ringPath(ring){sc.beginPath();ring.forEach((pt,i)=>{const x=X(pt[0]),y=Y(pt[1]);i?sc.lineTo(x,y):sc.moveTo(x,y);});sc.closePath();}
   (geo.features||[]).forEach(f=>{
     const pr=f.properties||{};
-    const iso=(pr.ISO_A2_EH&&pr.ISO_A2_EH!=='-99')?pr.ISO_A2_EH:pr.ISO_A2;  // EH first (FR/NO/XK), fallback catches Taiwan (CN-TW)
+    const iso=(pr.ISO_A2_EH&&pr.ISO_A2_EH!=='-99')?pr.ISO_A2_EH:pr.ISO_A2;  // ISO_A2_EH primary (FR/NO/XK/TW); ISO_A2 fallback for rare -99 cases
     const code=clMap[iso];const col=code&&code2col[code];
     if(!col)return;                                       // no mapping (e.g. ISO '-99') → skip
     sc.fillStyle=col;

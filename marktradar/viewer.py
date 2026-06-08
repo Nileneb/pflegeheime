@@ -306,6 +306,7 @@ a{color:inherit;text-decoration:none}
 .grid{display:grid;grid-template-columns:1.7fr 1fr;gap:14px}
 .panel{background:var(--pan);border:1px solid var(--ln);border-radius:8px;padding:14px 16px;margin-bottom:14px}
 .ph{font-size:10px;letter-spacing:2px;color:var(--mut);margin-bottom:10px;display:flex;justify-content:space-between}
+.ph-r{display:flex;align-items:center;gap:10px}.ph-r .btn{padding:2px 8px;letter-spacing:1px}
 .row{display:grid;grid-template-columns:74px 96px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid #131c2a;align-items:center}
 .row .ti{grid-column:3;color:#e6ebf2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .meta{grid-column:3;font-size:10px;color:var(--mut)}
@@ -495,7 +496,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 <section id=globe class=hide>
   <div class=globewrap>
     <div class=panel gpanel>
-      <div class=ph><span>HASHTAG-GLOBUS · ECHTE POSTS (Mastodon · Bluesky · News) · Drag = drehen · Klick Punkt = Quelle</span><span class=muted id=globestat></span></div>
+      <div class=ph><span>HASHTAG-GLOBUS · ECHTE POSTS (Mastodon · Bluesky · News) · Drag = drehen · Klick Punkt = Quelle</span><span class=ph-r><button class=btn id=arctog title="Ko-Vorkommen-Arcs ein/aus">⌇ Arcs: an</button><span class=muted id=globestat></span></span></div>
       <div id=globecanvas></div>
     </div>
     <div>
@@ -505,7 +506,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
         <div id=htlist class=muted>lädt…</div>
       </div>
       <div class=panel>
-        <div class=ph><span>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span></div>
+        <div class=ph><span>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span><span class=muted id=arcnote></span></div>
         <div id=httrends class=muted>—</div>
       </div>
       <div class=panel>
@@ -691,11 +692,13 @@ function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antia
 function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180;
   return new THREE.Vector3(-r*Math.sin(phi)*Math.cos(th),r*Math.cos(phi),r*Math.sin(phi)*Math.sin(th));}
 function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.style.display='none';
-  if(h){cancelAnimationFrame(h.raf);if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
+  if(h){cancelAnimationFrame(h.raf);
+    if(h.arcs)h.arcs.forEach(o=>{o.tube.geometry.dispose();o.tubeMat.dispose();o.glow.geometry.dispose();o.glowMat.dispose();});
+    if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
 
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
-let HTDATA=null, GLOBE=null;
+let HTDATA=null, GLOBE=null, ARCS_ON=true;
 async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();renderTrends();initGlobe(HTDATA.points);
   $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
 function renderTrends(){const pr=(HTDATA&&HTDATA.trends)||[];$('httrends').className=pr.length?'':'muted';
@@ -760,34 +763,65 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     new THREE.LineBasicMaterial({color:0x2a4a7a,transparent:true,opacity:0.13})));
   const group=new THREE.Group();scene.add(group);
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
-  const pgeo=new THREE.SphereGeometry(1,8,8);const N=Math.max(1,points.length);
+  const pgeo=new THREE.SphereGeometry(1,8,8);
   points.forEach((p,idx)=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
-    const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w),disc=idx/N;  // Trend-Gewicht → Größe
-    const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col}));m.position.copy(pos);m.scale.setScalar(base);
-    m.userData={url:p.url,base,inten,disc,_b:0,weight:w};group.add(m);
-    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.18,blending:THREE.AdditiveBlending,depthWrite:false}));
-    halo.position.copy(pos);halo.userData={host:m};group.add(halo);});
-  const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
+    const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w);  // Trend-Gewicht → Größe (konstant)
+    // Quellen sind RUHIG: Helligkeit fix aus Gewicht, kein Sweep. Aufblinken passiert nur auf den Arcs.
+    const bright=0.55+0.45*w;
+    const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col.clone().multiplyScalar(bright)}));
+    m.position.copy(pos);m.scale.setScalar(base);
+    m.userData={url:p.url,base,weight:w};group.add(m);
+    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.16+0.12*w,blending:THREE.AdditiveBlending,depthWrite:false}));
+    halo.position.copy(pos);halo.scale.setScalar(base*2.7);halo.userData={host:m};group.add(halo);});
+  // ── Ko-Vorkommen-Arcs: Centroid je Hashtag-Term (Mittel der Einheitsvektoren → Antimeridian-sicher) ──
+  const arcGroup=new THREE.Group();scene.add(arcGroup);
+  const ARCS=[];                                   // {curve,glow,tube,tubeMat,speed,phase,glowBase}
+  (function buildArcs(){
+    const acc={};points.forEach(p=>{const v=ll2v(p.lat,p.lon,1);const a=acc[p.term]||(acc[p.term]=new THREE.Vector3());a.add(v);});
+    const cen={};for(const term in acc){const v=acc[term];if(v.lengthSq()>1e-6)cen[term]=v.clone().normalize().multiplyScalar(1.012);}
+    let pairs=(HTDATA&&HTDATA.trends)||[];
+    const CAP=120;const total=pairs.length;
+    pairs=pairs.slice().sort((x,y)=>(y.n||0)-(x.n||0));
+    if(pairs.length>CAP){console.info(`Globe: ${pairs.length} Ko-Vorkommen-Paare, zeige nur Top ${CAP} (nach n).`);pairs=pairs.slice(0,CAP);}
+    const drawable=pairs.filter(pr=>cen[pr.a]&&cen[pr.b]);
+    const maxN=Math.max(1,...drawable.map(pr=>pr.n||1));
+    drawable.forEach((pr,i)=>{
+      const A=cen[pr.a],B=cen[pr.b];
+      const mid=A.clone().add(B).multiplyScalar(0.5);const lift=mid.length()>1e-6?1.25+0.25*Math.min(1,A.distanceTo(B)/1.6):1.35;
+      const ctrl=mid.clone().normalize().multiplyScalar(lift);
+      const curve=new THREE.QuadraticBezierCurve3(A.clone(),ctrl,B.clone());
+      const col=new THREE.Color(pr.ca||'#5b8def').lerp(new THREE.Color(pr.cb||'#5b8def'),0.5);
+      const nn=(pr.n||1)/maxN;                     // 0..1 relative Ko-Vorkommen-Stärke
+      const tubeMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.18+0.22*nn,blending:THREE.AdditiveBlending,depthWrite:false});
+      const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,40,0.0016+0.0022*nn,6,false),tubeMat);arcGroup.add(tube);
+      const glowMat=new THREE.MeshBasicMaterial({color:col.clone().lerp(new THREE.Color(0xffffff),0.45),transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false});
+      const glow=new THREE.Mesh(new THREE.SphereGeometry(1,10,10),glowMat);glow.scale.setScalar(0.008+0.012*nn);arcGroup.add(glow);
+      ARCS.push({curve,glow,glowMat,tube,tubeMat,speed:0.22+0.5*nn,phase:i*0.37,glowBase:0.008+0.012*nn,opBase:0.18+0.22*nn});
+    });
+    arcGroup.visible=ARCS_ON;
+    if(total>drawable.length){const note=$('arcnote');if(note)note.textContent=`${drawable.length}/${total} Paare als Arc (Rest: kein Geo / Cap ${CAP}).`;}
+  })();
   renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
     if(hit)window.open(hit.object.userData.url,'_blank');});
-  const clock=new THREE.Clock();const H={renderer};let frame=0;const CYCLE=16;
+  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS};let frame=0;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
     if((frame++%120)===0)updateSun();
-    // Zoom-relativ: nah dran → Punkte kleiner (sonst füllen sie den Schirm)
+    // Zoom-relativ: nah dran → Punkte kleiner (sonst füllen sie den Schirm). Quellen bleiben ruhig.
     const camDist=camera.position.length();const zoomF=Math.max(0.32,Math.min(1.25,(camDist-1.0)/1.7));
     group.children.forEach(m=>{
-      if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.7);
-        m.material.opacity=(0.05+0.5*hm.userData._b);}
-      else{const u=m.userData;
-        // Discovery-Sweep: bei „Entdeckung" kurzes Aufblitzen (paar Pulse), dann auf schwache
-        // Dauerhelligkeit abklingen → man sieht die reale Verbreitung. Gestaffelt über CYCLE.
-        const ta=((t - u.disc*CYCLE)%CYCLE+CYCLE)%CYCLE;const wf=0.55+0.85*u.weight;  // Trend → heller
-        let b;if(ta<2.4){const env=1-ta/2.4;b=(0.22+0.78*env*(0.5+0.5*Math.sin(ta*9)))*wf;}else{b=0.1+0.32*u.weight;}
-        u._b=b;m.scale.setScalar(u.base*zoomF*(0.6+0.9*b));}
+      if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.7);}
+      else m.scale.setScalar(m.userData.base*zoomF);
     });
+    // Arcs blinken: heller Glow wandert a→b (Geschwindigkeit ~ n), gestaffelte Phase + sanfter Opazitäts-Puls.
+    if(arcGroup.visible){ARCS.forEach(o=>{
+      const tt=((t*o.speed+o.phase)%1+1)%1;o.glow.position.copy(o.curve.getPoint(tt));
+      const pulse=0.5+0.5*Math.sin((t*o.speed+o.phase)*6.283);
+      o.glow.scale.setScalar(o.glowBase*(0.7+0.9*pulse));o.glowMat.opacity=0.45+0.55*pulse;
+      o.tubeMat.opacity=o.opBase*(0.75+0.45*pulse);
+    });}
     controls.update();renderer.render(scene,camera);})();
   GLOBE=H;}
 function hashStr(s){let h=0;for(let i=0;i<(s||'').length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
@@ -1003,6 +1037,8 @@ async function sendReskin(){
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 $('htrefresh').onclick=refreshHt;
+$('arctog').onclick=()=>{ARCS_ON=!ARCS_ON;$('arctog').textContent='⌇ Arcs: '+(ARCS_ON?'an':'aus');
+  if(GLOBE&&GLOBE.arcGroup)GLOBE.arcGroup.visible=ARCS_ON;};
 $('htaddbtn').onclick=addHt;
 $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
 $('scexit').onclick=closeScene;

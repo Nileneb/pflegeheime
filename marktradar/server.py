@@ -7,9 +7,18 @@ Auth: OAuth-Resource-Server (RFC 9728). Mit konfiguriertem JWT-Public-Key servie
 FastMCP /.well-known/oauth-protected-resource → Langdock entdeckt den Authorization-
 Server (app.linn.games) und führt den OAuth-Flow; die Tokens validiert der
 TokenVerifier (RS256) hier. Ohne Key → keine Auth (stdio/dev).
+
+Auto-refresh background thread (v2.1-T4):
+  PFLEGE_AUTO_REFRESH=1     — enable periodic hashtag refresh (default: 0/off)
+  PFLEGE_REFRESH_INTERVAL=1800  — seconds between refresh cycles (default: 1800 = 30 min)
+  PFLEGE_REFRESH_LIMIT=15   — per-hashtag post limit per cycle (default: 15)
+  PFLEGE_REFRESH_INITIAL_DELAY=60 — seconds to wait before first cycle (default: 60)
+Thread runs ONLY in this MCP-server entrypoint (mcp-pflege container), never in viewer.py.
 """
 import logging
 import os
+import threading
+import time
 
 from urllib.parse import urlparse
 
@@ -311,7 +320,66 @@ def geocode_org(traeger: str = "Bergische Diakonie") -> dict:
     return geo.geocode_units(_conn, traeger)
 
 
+_ALL_SOURCES = ("mastodon", "bluesky", "news")
+
+
+def _auto_refresh_loop(interval: int, limit: int, initial_delay: int) -> None:
+    """Daemon thread: periodically calls hashtags.refresh across all sources/languages.
+
+    Opens a fresh SQLite connection per cycle — never shares the module-level _conn
+    across threads (SQLite threading model: one connection per thread).
+    One failure per cycle is caught and logged as WARNING; the loop always continues.
+    """
+    time.sleep(initial_delay)
+    while True:
+        conn = None
+        try:
+            conn = db.connect()
+            result = hashtags.refresh(conn, sources=_ALL_SOURCES, limit=limit)
+            added = result.get("added", 0)
+            errors = result.get("errors", [])
+            _log.info(
+                "auto-refresh: added=%d errors=%d tags=%d",
+                added, len(errors), result.get("tags", 0),
+            )
+            if errors:
+                _log.warning("auto-refresh errors: %s", errors[:5])
+        except Exception as exc:  # WHY: one cycle failure (network, db lock) must never kill the loop
+            _log.warning("auto-refresh cycle failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        time.sleep(interval)
+
+
+def _start_auto_refresh() -> None:
+    """Start the background auto-refresh daemon thread if PFLEGE_AUTO_REFRESH is truthy."""
+    if os.getenv("PFLEGE_AUTO_REFRESH", "0").lower() not in ("1", "true", "yes"):
+        _log.info("auto-refresh disabled (set PFLEGE_AUTO_REFRESH=1 to enable)")
+        return
+
+    interval = int(os.getenv("PFLEGE_REFRESH_INTERVAL", "1800"))
+    limit = int(os.getenv("PFLEGE_REFRESH_LIMIT", "15"))
+    initial_delay = int(os.getenv("PFLEGE_REFRESH_INITIAL_DELAY", "60"))
+
+    _log.info(
+        "auto-refresh enabled: interval=%ds limit=%d initial_delay=%ds",
+        interval, limit, initial_delay,
+    )
+    t = threading.Thread(
+        target=_auto_refresh_loop,
+        args=(interval, limit, initial_delay),
+        daemon=True,
+        name="pflege-auto-refresh",
+    )
+    t.start()
+
+
 def main():
+    _start_auto_refresh()
     transport = os.getenv("PFLEGE_MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
         import uvicorn

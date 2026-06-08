@@ -5,9 +5,14 @@ from datetime import datetime, timezone
 
 import feedparser
 import requests
+import urllib3
 
 from marktradar import db, embeddings
 from sqlite_vec import serialize_float32
+
+# WHY: fetch() nutzt bewusst verify=False (kaputte TLS-Ketten auf vielen Heim-Sites);
+# nur DIESE eine Warnung dämpfen, nicht alle.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OLLAMA_HOST = embeddings.OLLAMA_HOST
 RELEVANCE_MODEL = "qwen3.5:9b"

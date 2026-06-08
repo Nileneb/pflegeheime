@@ -6,12 +6,20 @@ rows were validated under the old rules and may also flip to suspect.
 """
 
 import os
+from data_cleaner import db_connect
 from dotenv import load_dotenv
 
-from data_cleaner import db_connect, validate_cleaned
+from data_cleaner import validate_cleaned
 from fix_suspects import normalize_ort
 
 load_dotenv()
+
+DB_KW = dict(
+    host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
+    dbname=os.getenv("PGDATABASE"),
+    user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
+)
+
 
 def main() -> None:
     conn = db_connect()

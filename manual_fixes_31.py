@@ -5,9 +5,10 @@ or via web search. No LLM, no inference — verified data only.
 """
 
 import os
+from data_cleaner import db_connect
 from dotenv import load_dotenv
 
-from data_cleaner import db_connect, validate_cleaned
+from data_cleaner import validate_cleaned
 from fix_suspects import normalize_ort
 
 load_dotenv()
@@ -50,6 +51,61 @@ FIXES = [
 
 def main() -> None:
     conn = db_connect()
+    cur = conn.cursor()
+
+    fixed = flipped_ok = 0
+    for api_id, tel, email, addr in FIXES:
+        cur.execute(
+            "SELECT name, ort, geschaeftsfuehrung_clean, einrichtungsleitung_clean "
+            "FROM pflegeheime WHERE api_id=%s",
+            (str(api_id),),
+        )
+        r = cur.fetchone()
+        if not r:
+            print(f"  ! api_id={api_id}: not found")
+            continue
+        name, ort, gf, el = r
+
+        cleaned = {
+            "telefon": tel,
+            "email": email,
+            "adresse": addr,
+            "geschaeftsfuehrung": gf or "",
+            "einrichtungsleitung": el or "",
+            "notes": "",
+        }
+        cleaned = validate_cleaned(cleaned, normalize_ort(ort or ""))
+
+        cur.execute(
+            """UPDATE pflegeheime SET
+                 telefon_clean = %s,
+                 email_clean = %s,
+                 adresse_clean = %s,
+                 quality = %s,
+                 clean_notes = NULLIF(%s, ''),
+                 cleaner = 'manual'
+               WHERE api_id = %s""",
+            (
+                cleaned["telefon"],
+                cleaned["email"],
+                cleaned["adresse"],
+                cleaned["quality"],
+                "Manuell verifiziert via offizieller Webseite. " + (cleaned.get("notes", "") or ""),
+                str(api_id),
+            ),
+        )
+        fixed += 1
+        if cleaned["quality"] == "ok":
+            flipped_ok += 1
+        print(f"  [{cleaned['quality']:7}] {name[:36]:<36} ({ort}) → tel={tel[:20]:<20} email={email[:30]}")
+
+    conn.commit()
+    print(f"\nfixed: {fixed}, flipped to ok: {flipped_ok}")
+
+    cur.execute(
+        """SELECT cleaner, quality, COUNT(*) FROM pflegeheime
+           WHERE cleaner IS NOT NULL GROUP BY cleaner, quality ORDER BY cleaner, quality"""
+    )
     print("\nfinal:")
     for cl, q, n in cur.fetchall():
         print(f"  {cl:<28} {q:<10} {n}")

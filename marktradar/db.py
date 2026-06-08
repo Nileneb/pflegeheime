@@ -96,8 +96,12 @@ class _CursorShim:
 
     def execute(self, sql, params=None):
         sql_t, params_t = _tr(sql, params)
-        # Multi-statement DDL (no params, multiple semicolons) → executescript.
-        # Individual ALTER TABLE ADD COLUMN errors (duplicate column) are suppressed.
+        # WHY(pg-migration): Altskripte schicken Mehrfach-DDL (CREATE…;CREATE…;) in EINEM
+        # execute() — sqlite3 erlaubt nur ein Statement, daher hier am ';' splitten. Greift
+        # NUR im param-losen DDL-Fund (Daten-INSERTs tragen params → else-Zweig). Einschränkung:
+        # ';' in String-Literalen würde zerschnitten — in der Legacy-DDL kommt das nicht vor.
+        # Pro-Statement: 'duplicate column' (= ADD COLUMN IF NOT EXISTS-Emulation) wird
+        # geschluckt, jeder andere OperationalError propagiert.
         stripped = sql_t.strip().rstrip(";")
         if not params_t and ";" in stripped:
             for stmt in stripped.split(";"):

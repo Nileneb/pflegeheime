@@ -21,11 +21,11 @@ import re
 import json
 import time
 import base64
+from data_cleaner import db_connect
 import requests
 from dotenv import load_dotenv
 
 from data_cleaner import (
-    db_connect,
     PHONE_RE, EMAIL_RE, PLZ_RE, MUNICH_PHONE_RE,
     validate_cleaned,
 )
@@ -174,6 +174,103 @@ def reverse_geocode(lat: float, lon: float, session: requests.Session) -> str | 
 
 def main() -> None:
     conn = db_connect()
+    cur = conn.cursor()
+
+    # ---- Phase A: format-edge cases ----
+    cur.execute(
+        """
+        SELECT api_id, ort, lat, lon,
+               telefon_clean, email_clean, adresse_clean,
+               geschaeftsfuehrung_clean, einrichtungsleitung_clean
+        FROM pflegeheime
+        WHERE quality='suspect'
+        """
+    )
+    rows = cur.fetchall()
+    upd = conn.cursor()
+    a_tel = a_email = 0
+    for r in rows:
+        tel = r["telefon_clean"] or ""
+        email = r["email_clean"] or ""
+
+        new_tel, _ = fix_phone(tel)
+        new_email, _ = fix_email(email)
+
+        if new_tel != tel or new_email != email:
+            if new_tel != tel: a_tel += 1
+            if new_email != email: a_email += 1
+            upd.execute(
+                "UPDATE pflegeheime SET telefon_clean=%s, email_clean=%s WHERE api_id=%s",
+                (new_tel, new_email, r["api_id"]),
+            )
+    conn.commit()
+    print(f"phase A — phone fixes:  {a_tel}")
+    print(f"phase A — email fixes:  {a_email}")
+
+    # ---- Phase B: reverse-geocode rows without PLZ ----
+    cur.execute(
+        """
+        SELECT api_id, ort, lat, lon, adresse_clean
+        FROM pflegeheime
+        WHERE quality='suspect'
+          AND adresse_clean IS NOT NULL
+          AND adresse_clean NOT IN ('','No clear Data')
+          AND lat IS NOT NULL AND lon IS NOT NULL
+          AND adresse_clean !~ '\\m\\d{5}\\M'
+        """
+    )
+    geo_rows = cur.fetchall()
+    print(f"phase B — reverse-geocoding {len(geo_rows)} rows (1 req/s)…")
+    sess = requests.Session()
+    geo_fixed = 0
+    for r in geo_rows:
+        addr = reverse_geocode(float(r["lat"]), float(r["lon"]), sess)
+        time.sleep(1.0)  # Nominatim policy
+        if addr and PLZ_RE.search(addr):
+            upd.execute(
+                "UPDATE pflegeheime SET adresse_clean=%s WHERE api_id=%s",
+                (addr, r["api_id"]),
+            )
+            geo_fixed += 1
+    conn.commit()
+    print(f"phase B — geocoded fixes: {geo_fixed}")
+
+    # ---- Phase C: re-validate everything ----
+    cur.execute(
+        """
+        SELECT api_id, ort,
+               telefon_clean, email_clean, adresse_clean,
+               geschaeftsfuehrung_clean, einrichtungsleitung_clean, quality
+        FROM pflegeheime WHERE quality='suspect'
+        """
+    )
+    rows = cur.fetchall()
+    flipped = 0
+    for r in rows:
+        cleaned = {
+            "telefon": r["telefon_clean"] or "",
+            "email": r["email_clean"] or "",
+            "adresse": r["adresse_clean"] or "",
+            "geschaeftsfuehrung": r["geschaeftsfuehrung_clean"] or "",
+            "einrichtungsleitung": r["einrichtungsleitung_clean"] or "",
+            "notes": "",
+        }
+        cleaned = validate_cleaned(cleaned, normalize_ort(r["ort"] or ""))
+        if cleaned["quality"] != r["quality"]:
+            flipped += 1
+        upd.execute(
+            """UPDATE pflegeheime SET quality=%s, clean_notes=NULLIF(%s,'')
+               WHERE api_id=%s""",
+            (cleaned["quality"], cleaned.get("notes", ""), r["api_id"]),
+        )
+    conn.commit()
+    print(f"phase C — re-validated, flipped quality: {flipped}")
+
+    # ---- Final report ----
+    upd.execute(
+        """SELECT cleaner, quality, COUNT(*) FROM pflegeheime
+           WHERE cleaner IS NOT NULL GROUP BY cleaner, quality ORDER BY cleaner, quality"""
+    )
     print("\nfinal:")
     for cl, q, n in upd.fetchall():
         print(f"  {cl:<28} {q:<10} {n}")

@@ -48,13 +48,15 @@ def verify(conn) -> list[dict]:
     from marktradar import ingest
     out = []
     for row in conn.execute("SELECT id, name, url FROM sources").fetchall():
+        err = None
         try:
             content = ingest.fetch(row["url"])
             ok = bool(content) and len(ingest.parse_feed(content)) > 0
-        except Exception:
-            ok = False
+        except Exception as e:
+            ok, err = False, str(e)
+        status = "ok" if ok else (f"verify: {err}" if err else "verify: kein gültiger Feed")
         conn.execute("UPDATE sources SET enabled=?, last_status=? WHERE id=?",
-                     (1 if ok else 0, "ok" if ok else "verify: kein gültiger Feed", row["id"]))
+                     (1 if ok else 0, status, row["id"]))
         out.append({"name": row["name"], "ok": ok})
     conn.commit()
     return out

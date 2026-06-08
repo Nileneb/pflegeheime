@@ -22,6 +22,11 @@ from marktradar import auth, db, ingest, organigram, query
 INSTRUCTIONS = (
     "Pflege-Marktradar — Markt-Intelligence für den deutschen Pflegemarkt "
     "(News, Diskurs-Positionen, Entitäten, Organigramm). "
+    "TOOL-WAHL: Fragen nach dem ORGANIGRAMM / der Organisationsstruktur / dem Aufbau / "
+    "den Abteilungen, Bereichen, Einrichtungen oder Personen eines TRÄGERS "
+    "(z.B. „Bergische Diakonie“) beantwortest du mit `org_tree` / `org_stats` / "
+    "`org_persons` — NICHT mit get_entity oder search_news (die liefern nur News/Entitäten, "
+    "kein Org-Diagramm). Träger-Name als `traeger`-Parameter übergeben. "
     "QUELLENANGABE (wichtig): Jede Meldung/Position trägt ein `link`-Feld mit der "
     "ORIGINAL-URL und `source_domain`. Zitiere als Quelle IMMER diese `link`-URL "
     "(bzw. source_domain) — NIEMALS den Tool-Call-Namen oder eine call_*.json-Referenz."
@@ -173,8 +178,10 @@ def render_chart(topic: str) -> Image:
 
 @mcp.tool()
 def org_tree(traeger: str = "Bergische Diakonie") -> list[dict]:
-    """Verschachtelter Organigramm-Baum eines Trägers (Sektoren → Bereiche →
-    Einrichtungen), inkl. Icon/Farbe je Einheit."""
+    """ORGANIGRAMM / Organisationsstruktur / Aufbau eines Trägers (Pflege-Unternehmen,
+    z.B. „Bergische Diakonie“): verschachtelter Baum Sektoren → Bereiche → Einrichtungen,
+    mit Icon/Farbe je Einheit. Nutze DIESES Tool für jede Frage nach Abteilungen,
+    Bereichen, Einrichtungen oder dem Aufbau eines Trägers — nicht get_entity/search_news."""
     return organigram.tree(_conn, traeger)
 
 

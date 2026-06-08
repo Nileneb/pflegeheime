@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, query
+from marktradar import db, organigram, query
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
@@ -80,6 +80,13 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, query.timeline(conn, name, int(q.get("limit", ["40"])[0]), et))
             elif u.path == "/api/entity":
                 _json(self, query.get_entity(conn, q.get("name", [""])[0]) or {})
+            elif u.path == "/api/org":
+                traeger = q.get("traeger", ["Bergische Diakonie"])[0]
+                _json(self, {
+                    "stats": organigram.stats(conn, traeger),
+                    "tree": organigram.tree(conn, traeger),
+                    "persons": organigram.persons(conn, traeger=traeger),
+                })
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
@@ -203,6 +210,23 @@ svg text{font-family:inherit}
 .vbase{position:absolute;left:0;right:0;height:2px;background:#46527a}
 .vbase:after{content:'▶';position:absolute;right:-3px;top:-7px;color:#46527a;font-size:11px}
 .vlbl{position:absolute;left:0;font-size:9px;letter-spacing:1px;font-weight:600;background:var(--pan);padding-right:4px}
+.orgroot{display:inline-flex;align-items:center;gap:8px;font-weight:700;color:#fff;font-size:15px;border:1px solid var(--ln);border-radius:8px;padding:9px 16px;margin-bottom:14px}
+.orgsek{border:1px solid var(--ln);border-left:4px solid var(--mut);border-radius:8px;margin-bottom:10px;overflow:hidden}
+.orgsek>summary{list-style:none;cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:9px;font-weight:600;color:#fff;font-size:13px}
+.orgsek>summary::-webkit-details-marker{display:none}
+.orgsek>summary .cnt{margin-left:auto;color:var(--mut);font-size:10px;letter-spacing:1px;font-weight:400}
+.orgsek>summary .car{color:var(--mut);transition:transform .15s}
+.orgsek[open]>summary .car{transform:rotate(90deg)}
+.orgber{border-top:1px solid #131c2a;padding:8px 14px 8px 26px}
+.orgber>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;color:#dbe2ec}
+.orgber>summary::-webkit-details-marker{display:none}
+.orgber>summary .cnt{margin-left:auto;color:var(--mut);font-size:10px}
+.orgleaves{display:flex;flex-wrap:wrap;gap:6px;padding:8px 0 2px 22px}
+.orgleaf{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#cdd8e0;background:#0c121c;border:1px solid var(--ln);border-radius:5px;padding:3px 9px}
+.orgleaf .pin{width:7px;height:7px;border-radius:2px;flex:0 0 auto}
+.orgpers{font-size:10px;color:#f0a830;margin-left:4px}
+.orgppl{margin:6px 0 0 22px;font-size:11px;color:#aeb8c6;display:flex;flex-wrap:wrap;gap:10px}
+.orgppl b{color:#fff;font-weight:600}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -216,6 +240,7 @@ svg text{font-family:inherit}
   <div class=tab data-t=graph>ENTITÄTEN-GRAPH</div>
   <div class=tab data-t=diskurs>DISKURS</div>
   <div class=tab data-t=timeline>TIMELINE</div>
+  <div class=tab data-t=org>ORGANIGRAMM</div>
 </div>
 
 <section id=dash>
@@ -257,6 +282,13 @@ svg text{font-family:inherit}
     <div class=ph><span>ZEITSTRAHL · MELDUNGEN (Farbe = Event-Typ · Klick = Quelle)</span></div>
     <div class=tlf id=tlfilter></div>
     <div id=tltax class=muted>lädt…</div>
+  </div>
+</section>
+
+<section id=org class=hide>
+  <div class=panel>
+    <div class=ph><span id=orgname>ORGANIGRAMM</span><span class=muted id=orgstats></span></div>
+    <div id=orgtree class=muted>lädt…</div>
   </div>
 </section>
 
@@ -375,15 +407,45 @@ async function loadRadar(){
   $('radar').innerHTML=d.terms.map(t=>{const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
     return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div><div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div><div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
 }
+// ── ORGANIGRAMM: verschachtelter Träger-Baum, Farbe/Icon pro Knoten ──
+function orgPersons(map,name){const ps=map[name];return ps&&ps.length?`<span class=orgpers>· ${ps.map(p=>esc(p.first_name+' '+p.last_name)+(p.role?' ('+esc(p.role)+')':'')).join(', ')}</span>`:'';}
+function renderOrg(d){
+  const pmap={}; (d.persons||[]).forEach(p=>{(pmap[p.unit]=pmap[p.unit]||[]).push(p);});
+  const s=d.stats||{};
+  $('orgstats').textContent=`${s.einheiten||0} Einheiten · ${s.einrichtungen||0} Einrichtungen · ${s.personen||0} Personen`;
+  const root=(d.tree||[])[0];
+  if(!root){$('orgtree').className='muted';$('orgtree').textContent='keine Org-Daten — Organigramm wurde noch nicht angelegt';return;}
+  $('orgtree').className='';
+  let h=`<div class=orgroot style="border-color:${root.color||'#1c2535'}"><span>${esc(root.icon||'')}</span>${esc(root.name)}${orgPersons(pmap,root.name)}</div>`;
+  (root.children||[]).forEach(sek=>{
+    h+=`<details class=orgsek open style="border-left-color:${sek.color||'#6b7689'}">`+
+       `<summary><span class=car>▸</span><span>${esc(sek.icon||'')}</span><span style="color:${sek.color||'#fff'}">${esc(sek.name)}</span><span class=cnt>${(sek.children||[]).length} Bereiche</span></summary>`;
+    (sek.children||[]).forEach(ber=>{
+      const lv=ber.children||[];
+      h+=`<details class=orgber${lv.length?'':' open'}>`+
+         `<summary><span>${esc(ber.icon||'')}</span><span>${esc(ber.name)}</span>${orgPersons(pmap,ber.name)}<span class=cnt>${lv.length||''}</span></summary>`;
+      if(lv.length){
+        h+=`<div class=orgleaves>`+lv.map(l=>`<span class=orgleaf title="${esc(l.type||'')}"><span class=pin style="background:${l.color||sek.color||'#7a8290'}"></span>${esc(l.icon||'')} ${esc(l.name)}${orgPersons(pmap,l.name)}</span>`).join('')+`</div>`;
+      }
+      h+=`</details>`;
+    });
+    h+=`</details>`;
+  });
+  $('orgtree').innerHTML=h;
+}
+async function loadOrg(){renderOrg(await j('api/org'));}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
-  ['dash','graph','timeline','diskurs'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
+  ['dash','graph','timeline','diskurs','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
   if(t.dataset.t==='graph') loadGraph();
   if(t.dataset.t==='timeline') renderTimeline();
   if(t.dataset.t==='diskurs'){loadDiscourseTopic();loadRadar();}
+  if(t.dataset.t==='org') loadOrg();
+  if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);
 });
+(function(){const h=(location.hash||'').replace('#','');const t=h&&document.querySelector('.tab[data-t='+h+']');if(t)t.click();})();
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 
 async function loadGraph(){renderGraph(await j('api/graph'));}

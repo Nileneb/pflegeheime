@@ -575,7 +575,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
         <div id=htlist class=muted>lädt…</div>
       </div>
       <div class=panel>
-        <div class=ph><span>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span><span class=muted id=arcnote></span></div>
+        <div class=ph><span id=archdr>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span><span class=muted id=arcnote></span></div>
         <div id=httrends class=muted>—</div>
       </div>
       <div class=panel>
@@ -932,7 +932,7 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const pgeo=new THREE.SphereGeometry(1,8,8);
   let _expired=0;
   points.forEach(p=>{const decay=ageDecay(p.published);
-    if(decay<=0){_expired++;return;}                     // older than EXPIRY → disappears (visual only)
+    if(decay<0.05){_expired++;return;}                   // nearly/fully expired → skip (avoids phantom raycasting targets)
     const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
     const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w);  // Trend-Gewicht → Größe (konstant)
@@ -972,24 +972,30 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     const conns=(HTDATA&&HTDATA.connections)||[];
     if(conns.length){
       // ── Real cross-language/cross-region net: explicit endpoints from the backend ──
+      const _hdr=$('archdr');if(_hdr)_hdr.textContent='VERBINDUNGEN (Regionsübergreifend)';
       const CAP=200;const total=conns.length;
       let list=conns.slice().sort((x,y)=>(y.n||0)-(x.n||0));
       const localCap=list.length>CAP;
       if(localCap){console.info(`Globe: ${list.length} Verbindungen, zeige nur Top ${CAP} (nach n).`);list=list.slice(0,CAP);}
-      const maxN=Math.max(1,...list.map(c=>c.n||1));
-      list.forEach((c,i)=>{
+      const validList=list.filter(c=>Number.isFinite(c.a_lat)&&Number.isFinite(c.a_lon)&&Number.isFinite(c.b_lat)&&Number.isFinite(c.b_lon));
+      const nanSkipped=list.length-validList.length;
+      if(nanSkipped)console.warn(`Globe: ${nanSkipped} Verbindung(en) ohne gültige Koordinaten übersprungen.`);
+      const maxN=Math.max(1,...validList.map(c=>c.n||1));
+      validList.forEach((c,i)=>{
         const A=ll2v(c.a_lat,c.a_lon,1.012),B=ll2v(c.b_lat,c.b_lon,1.012);
         buildArc(A,B,new THREE.Color(c.color||'#5b8def'),(c.n||1)/maxN,c.kind,i);
       });
       const truncated=(HTDATA&&HTDATA.connections_truncated)||0;
       if(_note){
-        if(truncated&&localCap)_note.textContent=`${list.length} von ${total}+${truncated} Verbindungen (lokales Cap ${CAP}; Server droppte ${truncated} weitere).`;
-        else if(truncated)_note.textContent=`${list.length} Verbindungen — Server droppte ${truncated} über Cap.`;
-        else if(localCap)_note.textContent=`Top ${CAP} von ${total} Verbindungen dargestellt (nach Häufigkeit).`;
-        else _note.textContent=`${list.length} Verbindungen (Konzept + Cluster über Regionen).`;}
+        const nanNote=nanSkipped?` · ${nanSkipped} ohne Koordinaten verworfen`:'';
+        if(truncated&&localCap)_note.textContent=`${validList.length} von ${total} Verbindungen (Cap ${CAP}; ${truncated} serverseitig verworfen${nanNote}).`;
+        else if(truncated)_note.textContent=`${validList.length} Verbindungen — ${truncated} serverseitig verworfen${nanNote}.`;
+        else if(localCap)_note.textContent=`Top ${CAP} von ${total} Verbindungen dargestellt (nach Häufigkeit${nanNote}).`;
+        else _note.textContent=`${validList.length} Verbindungen (Konzept + Cluster über Regionen${nanNote}).`;}
     }else{
       // ── Fallback: thin data → centroid-per-term arcs from trends pairs (legacy v2 behavior) ──
-      const acc={};points.forEach(p=>{const v=ll2v(p.lat,p.lon,1);const a=acc[p.term]||(acc[p.term]=new THREE.Vector3());a.add(v);});
+      const _hdr=$('archdr');if(_hdr)_hdr.textContent='TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)';
+      const acc={};points.forEach(p=>{if(ageDecay(p.published)<=0)return;const v=ll2v(p.lat,p.lon,1);const a=acc[p.term]||(acc[p.term]=new THREE.Vector3());a.add(v);});
       const cen={};for(const term in acc){const v=acc[term];if(v.lengthSq()>1e-6)cen[term]=v.clone().normalize().multiplyScalar(1.012);}
       let pairs=(HTDATA&&HTDATA.trends)||[];
       const CAP=120;const total=pairs.length;
@@ -1053,7 +1059,7 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const _mlHandler=()=>{gtip.style.display='none';renderer.domElement.style.cursor='grab';};
   renderer.domElement.addEventListener('mousemove',_mmHandler);
   renderer.domElement.addEventListener('mouseleave',_mlHandler);
-  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS,_mmHandler,_mlHandler};
+  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS,_mmHandler,_mlHandler,raf:0};
   // Precompute language per marker once langgeo is available.
   ensureLangGeo().then(lg=>{if(lg&&GLOBE===H)precomputeMarkerLangs(srcMarkers,lg,(HTDATA&&HTDATA.languages)||[]);});let frame=0;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();

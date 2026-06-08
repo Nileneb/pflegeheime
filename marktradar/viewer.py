@@ -50,6 +50,7 @@ class Handler(BaseHTTPRequestHandler):
             body = INDEX_HTML.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")  # iframe immer frisch
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -269,6 +270,7 @@ svg text{font-family:inherit}
 input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radius:5px;background:#0c121c;padding:1px;cursor:pointer}
 .htrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #131c2a;font-size:11px}
 .htrow .sw{width:12px;height:12px;border-radius:3px;flex:0 0 auto;cursor:pointer}
+.htrow .swc{width:16px;height:16px;border:1px solid var(--ln);border-radius:3px;background:none;padding:0;cursor:pointer;flex:0 0 auto}
 .htrow .nm{color:#e6ebf2;cursor:pointer}.htrow.off .nm{color:var(--mut);text-decoration:line-through}
 .htrow .ct{margin-left:auto;color:var(--mut);font-size:10px}
 .htrow .geo{color:#2ecc71;font-size:9px}
@@ -531,29 +533,33 @@ async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();initG
   $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
 function renderHtLegend(){const d=HTDATA;$('htlist').className='';
   $('htlist').innerHTML=d.legend.map(t=>`<div class="htrow${t.active?'':' off'}">`+
-    `<span class=sw style="background:${t.color}" onclick="pickColor(${t.id},'${t.color}')" title="Farbe ändern"></span>`+
+    `<input type=color class=swc value="${t.color}" onchange="setColor(${t.id},this.value)" title="Farbe ändern">`+
     `<span class=nm onclick="showHtSources(${t.id},'${esc(t.term).replace(/'/g,'')}')">#${esc(t.term)}</span>`+
     `<span class=geo>${t.geo}📍</span><span class=ct>${t.count}</span>`+
     `<span class=tog onclick="toggleHt(${t.id},${t.active?0:1})" title="aktiv/inaktiv">${t.active?'◉':'○'}</span>`+
-    `<span class=x onclick="delHt(${t.id})" title="löschen">✕</span></div>`).join('')||'<span class=muted>keine Hashtags</span>';}
+    `<span class=x onclick="delHt(${t.id},this)" title="löschen — nochmal klick = weg">✕</span></div>`).join('')||'<span class=muted>keine Hashtags</span>';}
 function showHtSources(id,term){$('htsrc_title').textContent='QUELLEN · #'+term;
   const list=(HTDATA.sources[id]||[]);$('htsources').className=list.length?'':'muted';
   $('htsources').innerHTML=list.map(s=>`<a class=htsrc href="${esc(s.url)}" target=_blank>`+
     `<span class=srcbadge style="color:${SRCC[s.source]||'#888'};border-color:${SRCC[s.source]||'#888'}">${esc(s.source)}</span>`+
     `${esc((s.content||'').slice(0,100))}<span class=sm> — ${esc(s.author||'')} · ${esc((s.published||'').slice(0,10))}</span></a>`).join('')
     ||'noch keine Quellen — „↻ Quellen abrufen“ klicken';}
+// WHY: confirm()/prompt() werden in (eingebetteten) iframes von Browsern unterdrückt →
+// Delete/Color liefen ins Leere. Daher Zwei-Klick-Delete + Inline-Color-Input, non-modal.
 const POST=(u,o)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o||{})});
 async function addHt(){const term=$('htterm').value.trim();if(!term)return;
   const b=$('htaddbtn');b.textContent='…';b.disabled=true;
   try{const res=await (await POST('api/hashtag/add',{term,color:$('htcolor').value})).json();
-    $('htterm').value='';
-    if(res&&res.id) await POST('api/hashtags/refresh',{id:res.id,limit:15});  // sofort Quellen für den neuen Tag
-    await loadGlobe();
-    if(res&&res.id) showHtSources(res.id,res.term);
-  }finally{b.textContent='+';b.disabled=false;}}
-async function delHt(id){if(!confirm('Hashtag samt Posts löschen?'))return;await POST('api/hashtag/delete',{id});loadGlobe();}
-async function toggleHt(id,active){await POST('api/hashtag/update',{id,active:!!active});loadGlobe();}
-function pickColor(id,cur){const c=prompt('Farbe (Hex, z.B. #ff4d4d):',cur);if(c)POST('api/hashtag/update',{id,color:c}).then(loadGlobe);}
+    $('htterm').value='';await loadGlobe();                       // sofort sichtbar (0 Posts)
+    if(res&&res.id){showHtSources(res.id,res.term);
+      POST('api/hashtags/refresh',{id:res.id,limit:15}).then(()=>loadGlobe()).catch(()=>{});}  // Quellen im Hintergrund
+  }catch(e){console.warn('add failed',e);}finally{b.textContent='+';b.disabled=false;}}
+function delHt(id,el){
+  if(el&&el.dataset.armed){POST('api/hashtag/delete',{id}).then(loadGlobe);return;}
+  if(el){el.dataset.armed='1';el.textContent='↩?';el.style.color='#fff';
+    setTimeout(()=>{if(el){el.removeAttribute('data-armed');el.textContent='✕';el.style.color='';}},2500);}}
+function toggleHt(id,active){POST('api/hashtag/update',{id,active:!!active}).then(loadGlobe);}
+function setColor(id,c){POST('api/hashtag/update',{id,color:c}).then(loadGlobe);}
 async function refreshHt(){const b=$('htrefresh');b.textContent='lädt…';b.disabled=true;
   try{await POST('api/hashtags/refresh',{limit:15});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
 function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const renderer=makeRenderer(el);
@@ -563,11 +569,11 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=0.08;
   controls.enablePan=false;controls.minDistance=1.012;controls.maxDistance=6;controls.autoRotate=false;
   controls.zoomSpeed=0.8;controls.rotateSpeed=0.7;  // nah ranzoomen (DE beobachten) + feinere Drehung
-  scene.add(new THREE.AmbientLight(0x6982b8,0.32));  // gedämpft → Tag/Nacht-Kontrast sichtbar
+  scene.add(new THREE.AmbientLight(0x4a5a7a,0.28));  // dunkel → Tag/Nacht-Kontrast deutlich
   // Sonne: Richtung = subsolarer Punkt aus aktueller UTC-Zeit (Berlin-Tageszeit), live nachgeführt.
-  const sun=new THREE.DirectionalLight(0xfff1cc,1.25);scene.add(sun);scene.add(sun.target);
-  const sunMesh=new THREE.Mesh(new THREE.SphereGeometry(0.12,24,24),new THREE.MeshBasicMaterial({color:0xffe27a}));scene.add(sunMesh);
-  const sunGlow=new THREE.Mesh(new THREE.SphereGeometry(0.12,24,24),new THREE.MeshBasicMaterial({color:0xffd24d,transparent:true,opacity:0.35,blending:THREE.AdditiveBlending,depthWrite:false}));sunMesh.add(sunGlow);sunGlow.scale.setScalar(2.4);
+  const sun=new THREE.DirectionalLight(0xfff1cc,1.7);scene.add(sun);scene.add(sun.target);
+  const sunMesh=new THREE.Mesh(new THREE.SphereGeometry(0.2,28,28),new THREE.MeshBasicMaterial({color:0xffe680}));scene.add(sunMesh);
+  const sunGlow=new THREE.Mesh(new THREE.SphereGeometry(0.2,28,28),new THREE.MeshBasicMaterial({color:0xffd24d,transparent:true,opacity:0.45,blending:THREE.AdditiveBlending,depthWrite:false}));sunMesh.add(sunGlow);sunGlow.scale.setScalar(3.4);
   function subsolar(){const n=new Date();const utcH=n.getUTCHours()+n.getUTCMinutes()/60+n.getUTCSeconds()/3600;
     const lon=15*(12-utcH);  // Längengrad, an dem die Sonne im Zenit steht
     const start=Date.UTC(n.getUTCFullYear(),0,0);const doy=(Date.UTC(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate())-start)/864e5;
@@ -575,10 +581,11 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   function updateSun(){const d=subsolar();sun.position.copy(d.clone().multiplyScalar(5));sun.target.position.set(0,0,0);
     sunMesh.position.copy(d.clone().multiplyScalar(3.4));}
   updateSun();
-  const mat=new THREE.MeshPhongMaterial({color:0x16294a,emissive:0x081222,shininess:6,transparent:true,opacity:0.97});
+  // Farbige Erde (Blue Marble) + dunkles Emissive → Sonnenlicht/Tag-Nacht sichtbar.
+  const mat=new THREE.MeshPhongMaterial({color:0x2a3550,emissive:0x05080f,shininess:10,transparent:true,opacity:0.99});
   scene.add(new THREE.Mesh(new THREE.SphereGeometry(1,64,64),mat));
-  new THREE.TextureLoader().load('https://unpkg.com/three-globe/example/img/earth-dark.jpg',
-    t=>{mat.map=t;mat.color.set(0xffffff);mat.emissive.set(0x223355);mat.needsUpdate=true;},undefined,()=>{});
+  new THREE.TextureLoader().load('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg',
+    t=>{mat.map=t;mat.color.set(0xffffff);mat.needsUpdate=true;},undefined,()=>{});
   scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(1.003,24,16)),
     new THREE.LineBasicMaterial({color:0x2a4a7a,transparent:true,opacity:0.13})));
   const group=new THREE.Group();scene.add(group);

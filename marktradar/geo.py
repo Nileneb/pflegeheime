@@ -105,27 +105,40 @@ def geocode_units(conn, traeger="Bergische Diakonie", limit=None):
             "remaining": len(rows) - done}
 
 
+def _num(v):
+    try:
+        return float(str(v).replace("m", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
 def _height(tags):
-    for k in ("height", "building:height"):
-        v = tags.get(k)
-        if v:
-            try:
-                return float(str(v).replace("m", "").strip())
-            except ValueError:
-                pass
-    lv = tags.get("building:levels")
+    h = _num(tags.get("height")) or _num(tags.get("building:height"))
+    if h:
+        return h
+    lv = _num(tags.get("building:levels"))
     if lv:
-        try:
-            return float(lv) * 3.2
-        except ValueError:
-            pass
+        return lv * 3.2
     return 9.0
 
 
+def _roof(tags):
+    shape = (tags.get("roof:shape") or "").lower()
+    rh = _num(tags.get("roof:height"))
+    if rh is None:
+        rl = _num(tags.get("roof:levels"))
+        rh = rl * 2.6 if rl else None
+    # pitched-Dach getaggt aber ohne Höhe → sinnvoller Default
+    if shape and shape != "flat" and rh is None:
+        rh = 3.0
+    return shape or None, rh or 0.0, tags.get("roof:colour")
+
+
 def buildings(lat, lon, radius=320):
-    """Echte OSM-Gebäude im Umkreis: Liste {coords:[[lat,lon],...], height, tags}."""
-    ql = (f"[out:json][timeout:25];(way[\"building\"](around:{radius},{lat},{lon}););"
-          "out geom;")
+    """Echte OSM-Gebäude (inkl. building:part) im Umkreis, mit Höhe/Dach/Farbe."""
+    # building:part erst wieder rein, wenn der 3D-Renderer Dächer/min_height voll abbildet
+    # (sonst überlappen Parts flach mit dem Hauptgebäude).
+    ql = (f"[out:json][timeout:25];(way[\"building\"](around:{radius},{lat},{lon}););out geom;")
     data = urllib.parse.urlencode({"data": ql}).encode()
     res, last = None, None
     for ep in OVERPASS_ENDPOINTS:
@@ -146,20 +159,41 @@ def buildings(lat, lon, radius=320):
             continue
         coords = [[g["lat"], g["lon"]] for g in geom]
         tags = el.get("tags", {})
-        out.append({"coords": coords, "height": _height(tags),
-                    "name": tags.get("name"), "amenity": tags.get("amenity")})
+        shape, rh, rcol = _roof(tags)
+        out.append({
+            "coords": coords, "height": _height(tags),
+            "min_height": _num(tags.get("min_height")) or 0.0,
+            "roof_shape": shape, "roof_height": rh, "roof_colour": rcol,
+            "colour": tags.get("building:colour") or tags.get("colour"),
+            "name": tags.get("name"), "amenity": tags.get("amenity"),
+            "part": "building:part" in tags,
+        })
     return out
 
 
-def scene(conn, unit_id, radius=320):
-    """3D-Szenen-Daten für eine Einrichtung: Zentrum + OSM-Gebäude ringsum."""
-    u = conn.execute("SELECT id,name,lat,lon,address,meshy_url FROM org_units WHERE id=?",
-                     (unit_id,)).fetchone()
+def scene(conn, unit_id, radius=320, refresh=False):
+    """3D-Szenen-Daten für eine Einrichtung: Zentrum + OSM-Gebäude ringsum.
+    Gebäude werden je Einrichtung GECACHT (org_units.buildings_json) — Overpass ist
+    flaky+langsam, und es sind nur ~20-30 Einrichtungen. refresh=True erzwingt neu."""
+    import json
+    u = conn.execute("SELECT id,name,lat,lon,address,meshy_url,buildings_json "
+                     "FROM org_units WHERE id=?", (unit_id,)).fetchone()
     if not u:
         return {"error": "unit not found"}
     if u["lat"] is None or u["lon"] is None:
         return {"error": "not geocoded", "name": u["name"]}
-    bld = buildings(u["lat"], u["lon"], radius)
+    bld, cached = None, False
+    if u["buildings_json"] and not refresh:
+        try:
+            bld = json.loads(u["buildings_json"])
+            cached = True
+        except (ValueError, TypeError):
+            bld = None
+    if bld is None:
+        bld = buildings(u["lat"], u["lon"], radius)  # Overpass; wirft bei Totalausfall
+        conn.execute("UPDATE org_units SET buildings_json=? WHERE id=?",
+                     (json.dumps(bld), unit_id))
+        conn.commit()
     return {"name": u["name"], "center": {"lat": u["lat"], "lon": u["lon"]},
             "address": u["address"], "meshy_url": u["meshy_url"],
-            "radius": radius, "buildings": bld}
+            "radius": radius, "buildings": bld, "cached": cached}

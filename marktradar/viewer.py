@@ -140,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, hashtags.map_data(conn))
             elif u.path == "/api/org/scene":
                 _json(self, geo.scene(conn, int(q.get("id", ["0"])[0]),
-                                      int(q.get("radius", ["320"])[0])))
+                                      int(q.get("radius", ["320"])[0]),
+                                      refresh=q.get("refresh", ["0"])[0] in ("1", "true")))
             elif u.path == "/api/org/photos":
                 row = conn.execute("SELECT name,address,traeger FROM org_units WHERE id=?",
                                    (int(q.get("id", ["0"])[0]),)).fetchone()
@@ -712,25 +713,34 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     new THREE.LineBasicMaterial({color:0x2a4a7a,transparent:true,opacity:0.13})));
   const group=new THREE.Group();scene.add(group);
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
-  const pgeo=new THREE.SphereGeometry(1,8,8);
-  points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
+  const pgeo=new THREE.SphereGeometry(1,8,8);const N=Math.max(1,points.length);
+  points.forEach((p,idx)=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
-    const base=0.009+0.016*inten,phase=(Math.abs(hashStr(p.url))%628)/100;
+    const base=0.006+0.013*inten,disc=idx/N;  // disc = Reihenfolge im Discovery-Sweep
     const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col}));m.position.copy(pos);m.scale.setScalar(base);
-    m.userData={url:p.url,base,inten,phase};group.add(m);
-    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.22,blending:THREE.AdditiveBlending,depthWrite:false}));
+    m.userData={url:p.url,base,inten,disc,_b:0};group.add(m);
+    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.18,blending:THREE.AdditiveBlending,depthWrite:false}));
     halo.position.copy(pos);halo.userData={host:m};group.add(halo);});
   const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
   renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
     if(hit)window.open(hit.object.userData.url,'_blank');});
-  const clock=new THREE.Clock();const H={renderer};let frame=0;
+  const clock=new THREE.Clock();const H={renderer};let frame=0;const CYCLE=16;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
-    if((frame++%120)===0)updateSun();  // Sonne ~alle 2s nachführen (Zeit ändert sich langsam)
-    group.children.forEach(m=>{if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.6);
-        m.material.opacity=0.16+0.14*Math.sin(t*2.2+hm.userData.phase);}
-      else{const u=m.userData;m.scale.setScalar(u.base*(1+0.55*u.inten*Math.sin(t*2.4+u.phase)));}});
+    if((frame++%120)===0)updateSun();
+    // Zoom-relativ: nah dran → Punkte kleiner (sonst füllen sie den Schirm)
+    const camDist=camera.position.length();const zoomF=Math.max(0.32,Math.min(1.25,(camDist-1.0)/1.7));
+    group.children.forEach(m=>{
+      if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.7);
+        m.material.opacity=(0.05+0.5*hm.userData._b);}
+      else{const u=m.userData;
+        // Discovery-Sweep: bei „Entdeckung" kurzes Aufblitzen (paar Pulse), dann auf schwache
+        // Dauerhelligkeit abklingen → man sieht die reale Verbreitung. Gestaffelt über CYCLE.
+        const ta=((t - u.disc*CYCLE)%CYCLE+CYCLE)%CYCLE;
+        let b;if(ta<2.4){const env=1-ta/2.4;b=0.22+0.78*env*(0.5+0.5*Math.sin(ta*9));}else{b=0.16;}
+        u._b=b;m.scale.setScalar(u.base*zoomF*(0.6+0.9*b));}
+    });
     controls.update();renderer.render(scene,camera);})();
   GLOBE=H;}
 function hashStr(s){let h=0;for(let i=0;i<(s||'').length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
@@ -831,17 +841,20 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
   const lat0=d.center.lat,lon0=d.center.lon,mats=[];const focalKey=(d.name||'').toLowerCase();
   d.buildings.forEach(b=>{const shp=new THREE.Shape();let ok=true;
     b.coords.forEach((c,i)=>{const [x,z]=projXY(c[0],c[1],lat0,lon0);if(!isFinite(x)||!isFinite(z))ok=false;i?shp.lineTo(x,z):shp.moveTo(x,z);});
-    if(!ok)return;let g;try{g=new THREE.ExtrudeGeometry(shp,{depth:Math.max(3,b.height),bevelEnabled:false});}catch(e){return;}
-    g.rotateX(-Math.PI/2);const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x8590a6,roughness:0.92}));
+    if(!ok)return;const base=Math.max(0,b.min_height||0),top=Math.max(base+2,b.height||9);
+    let g;try{g=new THREE.ExtrudeGeometry(shp,{depth:top-base,bevelEnabled:false});}catch(e){return;}
+    g.rotateX(-Math.PI/2);if(base>0)g.translate(0,base,0);
+    let bcol=0x8590a6;if(b.colour){try{bcol=new THREE.Color(b.colour).getHex();}catch(e){}}
+    const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:bcol,roughness:0.92}));
     m.userData.focal=!!(b.name&&focalKey&&(b.name.toLowerCase().includes(focalKey)||focalKey.includes(b.name.toLowerCase())));
-    scene.add(m);mats.push(m);});
+    m.userData.bcol=bcol;scene.add(m);mats.push(m);});
   // Stil-Presets
   function applyStyle(name){document.querySelectorAll('.scbtn').forEach(x=>x.classList.toggle('on',x.dataset.st===name));
     let bg,fog,gc,mk;
     if(name==='neon'){bg=0x05030f;fog=[0x05030f,60,800];gc=0x0a0618;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffe24d:0x00ffd0,wireframe:true});}
     else if(name==='toon'){bg=0xcfe7ff;fog=[0xcfe7ff,200,1600];gc=0x7da35a;mk=b=>new THREE.MeshToonMaterial({color:b.userData.focal?0xffb347:0xb7c7dd});}
     else if(name==='blueprint'){bg=0x0a1a3a;fog=[0x0a1a3a,100,1300];gc=0x06122a;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffd24d:0x66ccff,wireframe:true});}
-    else{bg=0x9fb6d4;fog=[0x9fb6d4,250,1800];gc=0x2a3340;mk=b=>new THREE.MeshStandardMaterial({color:b.userData.focal?0xffcc44:0x8590a6,roughness:0.92});}
+    else{bg=0x9fb6d4;fog=[0x9fb6d4,250,1800];gc=0x2a3340;mk=b=>new THREE.MeshStandardMaterial({color:b.userData.focal?0xffcc44:(b.userData.bcol||0x8590a6),roughness:0.92});}
     scene.background=new THREE.Color(bg);scene.fog=new THREE.Fog(fog[0],fog[1],fog[2]);ground.material.color.set(gc);
     mats.forEach(m=>{m.material.dispose();m.material=mk(m);});}
   const keys={},kd=e=>{keys[e.code]=true;if(['1','2','3','4'].includes(e.key))applyStyle(['real','neon','toon','blueprint'][+e.key-1]);},ku=e=>{keys[e.code]=false;};

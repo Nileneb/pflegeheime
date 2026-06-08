@@ -48,6 +48,24 @@ GAZ = {
     "new york": (40.71, -74.0), "france": (48.85, 2.35), "paris": (48.85, 2.35),
     "netherlands": (52.37, 4.9), "amsterdam": (52.37, 4.9), "spain": (40.42, -3.7),
     "italy": (41.9, 12.5), "europe": (50.1, 9.0), "eu": (50.85, 4.35),
+    # global (für nicht-DE Mastodon/Bluesky-Autoren — Weltkugel statt nur DE)
+    "rome": (41.9, 12.5), "madrid": (40.42, -3.7), "barcelona": (41.39, 2.17),
+    "lisbon": (38.72, -9.14), "portugal": (39.4, -8.2), "brussels": (50.85, 4.35),
+    "belgium": (50.5, 4.5), "dublin": (53.35, -6.26), "ireland": (53.4, -8.0),
+    "copenhagen": (55.68, 12.57), "denmark": (56.0, 10.0), "stockholm": (59.33, 18.06),
+    "sweden": (60.0, 18.0), "oslo": (59.91, 10.75), "norway": (60.5, 8.5),
+    "helsinki": (60.17, 24.94), "finland": (62.0, 26.0), "warsaw": (52.23, 21.0),
+    "poland": (52.0, 19.0), "prague": (50.08, 14.44), "budapest": (47.5, 19.04),
+    "athens": (37.98, 23.73), "greece": (39.0, 22.0), "istanbul": (41.0, 28.98),
+    "turkey": (39.0, 35.0), "moscow": (55.75, 37.62), "tokyo": (35.68, 139.69),
+    "japan": (36.2, 138.25), "beijing": (39.9, 116.4), "china": (35.0, 104.0),
+    "delhi": (28.61, 77.21), "india": (22.0, 79.0), "sydney": (-33.87, 151.21),
+    "australia": (-25.0, 133.0), "toronto": (43.65, -79.38), "canada": (56.0, -106.0),
+    "los angeles": (34.05, -118.24), "san francisco": (37.77, -122.42),
+    "chicago": (41.88, -87.63), "washington": (38.9, -77.04), "boston": (42.36, -71.06),
+    "brazil": (-14.2, -51.9), "são paulo": (-23.55, -46.63), "mexico": (23.6, -102.5),
+    "south africa": (-30.0, 25.0), "egypt": (26.8, 30.8), "nigeria": (9.1, 8.7),
+    "singapore": (1.35, 103.82), "dubai": (25.2, 55.27), "uae": (24.0, 54.0),
 }
 DE_CENTER = (51.16, 10.45)
 

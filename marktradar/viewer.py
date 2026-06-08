@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, organigram, query
+from marktradar import db, hashtags, organigram, query
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
@@ -87,21 +87,47 @@ class Handler(BaseHTTPRequestHandler):
                     "tree": organigram.tree(conn, traeger),
                     "persons": organigram.persons(conn, traeger=traeger),
                 })
+            elif u.path == "/api/hashtags":
+                _json(self, hashtags.map_data(conn))
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
             conn.close()
 
+    def _body(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if not n:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            return {}
+
     def do_POST(self):
-        if urlparse(self.path).path == "/api/mark_seen":
-            conn = _db()
-            try:
+        path = urlparse(self.path).path
+        conn = _db()
+        try:
+            if path == "/api/mark_seen":
                 query.set_meta(conn, "last_seen", datetime.now(timezone.utc).isoformat())
                 _json(self, {"ok": True})
-            finally:
-                conn.close()
-        else:
-            _json(self, {"error": "not found"}, 404)
+            elif path == "/api/hashtag/add":
+                b = self._body()
+                _json(self, hashtags.add(conn, b.get("term", ""), b.get("color", "#5b8def")))
+            elif path == "/api/hashtag/update":
+                b = self._body()
+                _json(self, hashtags.update(conn, int(b["id"]), b.get("term"),
+                                            b.get("color"), b.get("active")))
+            elif path == "/api/hashtag/delete":
+                b = self._body()
+                _json(self, hashtags.delete(conn, int(b["id"])))
+            elif path == "/api/hashtags/refresh":
+                b = self._body()
+                src = tuple(b["sources"]) if b.get("sources") else ("mastodon", "bluesky", "news")
+                _json(self, hashtags.refresh(conn, src, int(b.get("limit", 15))))
+            else:
+                _json(self, {"error": "not found"}, 404)
+        finally:
+            conn.close()
 
     def _sse(self):
         self.send_response(200)
@@ -227,6 +253,26 @@ svg text{font-family:inherit}
 .orgpers{font-size:10px;color:#f0a830;margin-left:4px}
 .orgppl{margin:6px 0 0 22px;font-size:11px;color:#aeb8c6;display:flex;flex-wrap:wrap;gap:10px}
 .orgppl b{color:#fff;font-weight:600}
+.globewrap{display:grid;grid-template-columns:1fr 330px;gap:14px;align-items:start}
+#globecanvas{width:100%;height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
+#globecanvas:active{cursor:grabbing}
+.htadd{display:flex;gap:6px;margin-bottom:10px}
+.htin{flex:1;background:#0c121c;border:1px solid var(--ln);color:var(--fg);border-radius:5px;padding:5px 8px;font:inherit;font-size:11px}
+input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radius:5px;background:#0c121c;padding:1px;cursor:pointer}
+.htrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #131c2a;font-size:11px}
+.htrow .sw{width:12px;height:12px;border-radius:3px;flex:0 0 auto;cursor:pointer}
+.htrow .nm{color:#e6ebf2;cursor:pointer}.htrow.off .nm{color:var(--mut);text-decoration:line-through}
+.htrow .ct{margin-left:auto;color:var(--mut);font-size:10px}
+.htrow .geo{color:#2ecc71;font-size:9px}
+.htrow .tog,.htrow .x{cursor:pointer;font-size:13px;padding:0 2px}.htrow .x{color:#ff6b6b}
+.htsrc{display:block;padding:6px 0;border-bottom:1px solid #131c2a;font-size:11px}
+.htsrc .sm{color:var(--mut);font-size:10px}
+.htsrc a{color:#cdd8e0}.htsrc a:hover{color:#fff}
+.srcbadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;margin-right:5px;letter-spacing:1px}
+.orgmodes{display:flex;gap:6px;margin:4px 0 14px}
+.flowwrap{overflow:auto;padding:6px 0 16px;max-height:74vh}
+#org3d{height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
+.flegend{display:flex;gap:14px;margin-top:8px;flex-wrap:wrap;font-size:10px;color:var(--mut)}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -240,6 +286,7 @@ svg text{font-family:inherit}
   <div class=tab data-t=graph>ENTITÄTEN-GRAPH</div>
   <div class=tab data-t=diskurs>DISKURS</div>
   <div class=tab data-t=timeline>TIMELINE</div>
+  <div class=tab data-t=globe>HASHTAG-GLOBUS</div>
   <div class=tab data-t=org>ORGANIGRAMM</div>
 </div>
 
@@ -285,13 +332,40 @@ svg text{font-family:inherit}
   </div>
 </section>
 
-<section id=org class=hide>
-  <div class=panel>
-    <div class=ph><span id=orgname>ORGANIGRAMM</span><span class=muted id=orgstats></span></div>
-    <div id=orgtree class=muted>lädt…</div>
+<section id=globe class=hide>
+  <div class=globewrap>
+    <div class=panel gpanel>
+      <div class=ph><span>HASHTAG-GLOBUS · ECHTE POSTS (Mastodon · Bluesky · News) · Drag = drehen · Klick Punkt = Quelle</span><span class=muted id=globestat></span></div>
+      <div id=globecanvas></div>
+    </div>
+    <div>
+      <div class=panel>
+        <div class=ph><span>HASHTAGS</span><button class=btn id=htrefresh>↻ Quellen abrufen</button></div>
+        <div class=htadd><input id=htterm placeholder="neuer-hashtag" class=htin><input id=htcolor type=color value="#5b8def"><button class=btn id=htaddbtn>+ </button></div>
+        <div id=htlist class=muted>lädt…</div>
+      </div>
+      <div class=panel>
+        <div class=ph><span id=htsrc_title>QUELLEN · echte Links</span></div>
+        <div id=htsources class=muted>Hashtag oben anklicken…</div>
+      </div>
+    </div>
   </div>
 </section>
 
+<section id=org class=hide>
+  <div class=panel>
+    <div class=ph><span id=orgname>ORGANIGRAMM</span><span class=muted id=orgstats></span></div>
+    <div class=orgmodes>
+      <span class="tab on" data-om=flow onclick="setOrgMode('flow')">⬇ FLUSSDIAGRAMM</span>
+      <span class="tab" data-om=d3 onclick="setOrgMode('d3')">◍ 3D-GRAPH</span>
+    </div>
+    <div id=orgflow class=muted>lädt…</div>
+    <div id=org3d class=hide></div>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
 const EVC={insolvenz:'#ff4d4d',politik:'#5b8def',expansion:'#2ecc71',personalie:'#f0a830',produkt:'#9b6dff',auszeichnung:'#26c6da',schliessung:'#ff7043'};
 const evc=t=>EVC[t]||'#7a8290';
@@ -407,41 +481,129 @@ async function loadRadar(){
   $('radar').innerHTML=d.terms.map(t=>{const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
     return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div><div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div><div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
 }
-// ── ORGANIGRAMM: verschachtelter Träger-Baum, Farbe/Icon pro Knoten ──
-function orgPersons(map,name){const ps=map[name];return ps&&ps.length?`<span class=orgpers>· ${ps.map(p=>esc(p.first_name+' '+p.last_name)+(p.role?' ('+esc(p.role)+')':'')).join(', ')}</span>`:'';}
-function renderOrg(d){
-  const pmap={}; (d.persons||[]).forEach(p=>{(pmap[p.unit]=pmap[p.unit]||[]).push(p);});
-  const s=d.stats||{};
+// ── three.js Helfer (Globus + Org-3D teilen sich Renderer-Erzeugung) ──
+function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antialias:true,alpha:true});
+  r.setPixelRatio(Math.min(2,devicePixelRatio));r.setSize(el.clientWidth,el.clientHeight||600);el.appendChild(r.domElement);return r;}
+function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180;
+  return new THREE.Vector3(-r*Math.sin(phi)*Math.cos(th),r*Math.cos(phi),r*Math.sin(phi)*Math.sin(th));}
+function disposeScene(h){if(h){cancelAnimationFrame(h.raf);if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
+
+// ── HASHTAG-GLOBUS ──
+const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
+let HTDATA=null, GLOBE=null;
+async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();initGlobe(HTDATA.points);
+  $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
+function renderHtLegend(){const d=HTDATA;$('htlist').className='';
+  $('htlist').innerHTML=d.legend.map(t=>`<div class="htrow${t.active?'':' off'}">`+
+    `<span class=sw style="background:${t.color}" onclick="pickColor(${t.id},'${t.color}')" title="Farbe ändern"></span>`+
+    `<span class=nm onclick="showHtSources(${t.id},'${esc(t.term).replace(/'/g,'')}')">#${esc(t.term)}</span>`+
+    `<span class=geo>${t.geo}📍</span><span class=ct>${t.count}</span>`+
+    `<span class=tog onclick="toggleHt(${t.id},${t.active?0:1})" title="aktiv/inaktiv">${t.active?'◉':'○'}</span>`+
+    `<span class=x onclick="delHt(${t.id})" title="löschen">✕</span></div>`).join('')||'<span class=muted>keine Hashtags</span>';}
+function showHtSources(id,term){$('htsrc_title').textContent='QUELLEN · #'+term;
+  const list=(HTDATA.sources[id]||[]);$('htsources').className=list.length?'':'muted';
+  $('htsources').innerHTML=list.map(s=>`<a class=htsrc href="${esc(s.url)}" target=_blank>`+
+    `<span class=srcbadge style="color:${SRCC[s.source]||'#888'};border-color:${SRCC[s.source]||'#888'}">${esc(s.source)}</span>`+
+    `${esc((s.content||'').slice(0,100))}<span class=sm> — ${esc(s.author||'')} · ${esc((s.published||'').slice(0,10))}</span></a>`).join('')
+    ||'noch keine Quellen — „↻ Quellen abrufen“ klicken';}
+async function addHt(){const term=$('htterm').value.trim();if(!term)return;
+  await fetch('api/hashtag/add',{method:'POST',body:JSON.stringify({term,color:$('htcolor').value})});$('htterm').value='';loadGlobe();}
+async function delHt(id){if(!confirm('Hashtag samt Posts löschen?'))return;
+  await fetch('api/hashtag/delete',{method:'POST',body:JSON.stringify({id})});loadGlobe();}
+async function toggleHt(id,active){await fetch('api/hashtag/update',{method:'POST',body:JSON.stringify({id,active:!!active})});loadGlobe();}
+function pickColor(id,cur){const c=prompt('Farbe (Hex, z.B. #ff4d4d):',cur);if(c)fetch('api/hashtag/update',{method:'POST',body:JSON.stringify({id,color:c})}).then(loadGlobe);}
+async function refreshHt(){const b=$('htrefresh');b.textContent='lädt…';b.disabled=true;
+  try{await fetch('api/hashtags/refresh',{method:'POST',body:JSON.stringify({limit:15})});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
+function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const renderer=makeRenderer(el);
+  const scene=new THREE.Scene();
+  const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.1,100);camera.position.set(0,0.6,2.7);
+  const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=0.08;
+  controls.enablePan=false;controls.minDistance=1.4;controls.maxDistance=5;controls.autoRotate=true;controls.autoRotateSpeed=0.45;
+  scene.add(new THREE.AmbientLight(0x90b0ff,0.8));const dl=new THREE.DirectionalLight(0xffffff,0.7);dl.position.set(3,2,1);scene.add(dl);
+  const mat=new THREE.MeshPhongMaterial({color:0x16294a,emissive:0x081222,shininess:6,transparent:true,opacity:0.97});
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(1,64,64),mat));
+  new THREE.TextureLoader().load('https://unpkg.com/three-globe/example/img/earth-dark.jpg',
+    t=>{mat.map=t;mat.color.set(0xffffff);mat.emissive.set(0x223355);mat.needsUpdate=true;},undefined,()=>{});
+  scene.add(new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(1.003,24,16)),
+    new THREE.LineBasicMaterial({color:0x2a4a7a,transparent:true,opacity:0.13})));
+  const group=new THREE.Group();scene.add(group);
+  const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
+  const pgeo=new THREE.SphereGeometry(1,8,8);
+  points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
+    const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
+    const base=0.009+0.016*inten,phase=(Math.abs(hashStr(p.url))%628)/100;
+    const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col}));m.position.copy(pos);m.scale.setScalar(base);
+    m.userData={url:p.url,base,inten,phase};group.add(m);
+    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.22,blending:THREE.AdditiveBlending,depthWrite:false}));
+    halo.position.copy(pos);halo.userData={host:m};group.add(halo);});
+  const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
+  renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
+    mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
+    if(hit)window.open(hit.object.userData.url,'_blank');});
+  const clock=new THREE.Clock();const H={renderer};
+  (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
+    group.children.forEach(m=>{if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.6);
+        m.material.opacity=0.16+0.14*Math.sin(t*2.2+hm.userData.phase);}
+      else{const u=m.userData;m.scale.setScalar(u.base*(1+0.55*u.inten*Math.sin(t*2.4+u.phase)));}});
+    controls.update();renderer.render(scene,camera);})();
+  GLOBE=H;}
+function hashStr(s){let h=0;for(let i=0;i<(s||'').length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
+
+// ── ORGANIGRAMM: 2D-Flussdiagramm (SVG) + 3D-Graph (three.js) ──
+let ORGDATA=null, curOrgMode='flow', ORG3D=null;
+async function loadOrg(){ORGDATA=await j('api/org');const s=ORGDATA.stats||{};
   $('orgstats').textContent=`${s.einheiten||0} Einheiten · ${s.einrichtungen||0} Einrichtungen · ${s.personen||0} Personen`;
-  const root=(d.tree||[])[0];
-  if(!root){$('orgtree').className='muted';$('orgtree').textContent='keine Org-Daten — Organigramm wurde noch nicht angelegt';return;}
-  $('orgtree').className='';
-  let h=`<div class=orgroot style="border-color:${root.color||'#1c2535'}"><span>${esc(root.icon||'')}</span>${esc(root.name)}${orgPersons(pmap,root.name)}</div>`;
-  (root.children||[]).forEach(sek=>{
-    h+=`<details class=orgsek open style="border-left-color:${sek.color||'#6b7689'}">`+
-       `<summary><span class=car>▸</span><span>${esc(sek.icon||'')}</span><span style="color:${sek.color||'#fff'}">${esc(sek.name)}</span><span class=cnt>${(sek.children||[]).length} Bereiche</span></summary>`;
-    (sek.children||[]).forEach(ber=>{
-      const lv=ber.children||[];
-      h+=`<details class=orgber${lv.length?'':' open'}>`+
-         `<summary><span>${esc(ber.icon||'')}</span><span>${esc(ber.name)}</span>${orgPersons(pmap,ber.name)}<span class=cnt>${lv.length||''}</span></summary>`;
-      if(lv.length){
-        h+=`<div class=orgleaves>`+lv.map(l=>`<span class=orgleaf title="${esc(l.type||'')}"><span class=pin style="background:${l.color||sek.color||'#7a8290'}"></span>${esc(l.icon||'')} ${esc(l.name)}${orgPersons(pmap,l.name)}</span>`).join('')+`</div>`;
-      }
-      h+=`</details>`;
-    });
-    h+=`</details>`;
-  });
-  $('orgtree').innerHTML=h;
-}
-async function loadOrg(){renderOrg(await j('api/org'));}
+  setOrgMode(curOrgMode);}
+function setOrgMode(m){curOrgMode=m;document.querySelectorAll('.tab[data-om]').forEach(x=>x.classList.toggle('on',x.dataset.om===m));
+  $('orgflow').classList.toggle('hide',m!=='flow');$('org3d').classList.toggle('hide',m!=='d3');
+  if(!ORGDATA||!ORGDATA.tree[0])return;
+  if(m==='flow'){disposeScene(ORG3D);ORG3D=null;renderOrgFlow(ORGDATA.tree[0]);}else renderOrg3D(ORGDATA.tree[0]);}
+function layoutTree(root){let leaf=0;const XG=172,YG=96;
+  (function w(n,d){const k=n.children||[];if(!k.length)n._x=leaf++;else{k.forEach(c=>w(c,d+1));n._x=(k[0]._x+k[k.length-1]._x)/2;}n._d=d;})(root,0);
+  const NODES=[],EDGES=[];
+  (function c(n){const px=n._x*XG+80,py=n._d*YG+30;n._px=px;n._py=py;NODES.push({n,x:px,y:py});
+    (n.children||[]).forEach(ch=>{c(ch);EDGES.push([px,py,ch._px,ch._py]);});})(root);
+  return {NODES,EDGES,w:leaf*XG+160,leaves:leaf};}
+function renderOrgFlow(root){if(!root){$('orgflow').className='muted';$('orgflow').textContent='keine Org-Daten';return;}
+  const L=layoutTree(root);const H=Math.max(...L.NODES.map(o=>o.y))+60;
+  const edges=L.EDGES.map(([x1,y1,x2,y2])=>{const my=(y1+14+y2-14)/2;
+    return `<path d="M${x1} ${y1+14} V${my} H${x2} V${y2-14}" stroke="#2a3550" fill="none" stroke-width="1.4"/>`;}).join('');
+  const boxes=L.NODES.map(({n,x,y})=>{const col=n.color||'#46527a';const full=(n.short_name||n.name);
+    const short=full.length>20?full.slice(0,19)+'…':full;const lbl=esc((n.icon?n.icon+' ':'')+short);
+    const w=Math.min(160,Math.max(60,lbl.length*7+16));const bg=n.level===0?col:'#0f1622';const tc=n.level===0?'#fff':'#dbe2ec';
+    return `<g><title>${esc((n.icon?n.icon+' ':'')+full)}</title><rect x="${x-w/2}" y="${y-14}" width="${w}" height="28" rx="7" fill="${bg}" stroke="${col}" stroke-width="1.7"/>`+
+      `<text x="${x}" y="${y+4}" text-anchor=middle fill="${tc}" font-size="11">${lbl}</text></g>`;}).join('');
+  $('orgflow').className='flowwrap';
+  $('orgflow').innerHTML=`<svg width="${L.w}" height="${H}" viewBox="0 0 ${L.w} ${H}" style="min-width:${L.w}px">${edges}${boxes}</svg>`;}
+function renderOrg3D(root){disposeScene(ORG3D);const el=$('org3d');const renderer=makeRenderer(el);
+  const scene=new THREE.Scene();const camera=new THREE.PerspectiveCamera(50,el.clientWidth/(el.clientHeight||600),0.1,3000);
+  camera.position.set(0,80,440);const controls=new THREE.OrbitControls(camera,renderer.domElement);
+  controls.enableDamping=true;controls.autoRotate=true;controls.autoRotateSpeed=0.5;controls.target.set(0,-110,0);
+  scene.add(new THREE.AmbientLight(0xffffff,0.85));
+  const L=layoutTree(root);const leaves=Math.max(1,L.leaves);const sgeo=new THREE.SphereGeometry(1,16,16);const seg=[];
+  const pos=n=>{const a=(n._x/leaves)*Math.PI*2,r=n._d*72;return new THREE.Vector3(r*Math.cos(a),-n._d*82+150,r*Math.sin(a));};
+  (function place(n){const p=pos(n);const r=n._d===0?11:n._d===1?7.5:n._d===2?5:3.4;
+    const m=new THREE.Mesh(sgeo,new THREE.MeshBasicMaterial({color:new THREE.Color(n.color||'#46527a')}));
+    m.position.copy(p);m.scale.setScalar(r);scene.add(m);
+    (n.children||[]).forEach(ch=>{const cp=pos(ch);seg.push(p.x,p.y,p.z,cp.x,cp.y,cp.z);place(ch);});})(root);
+  const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(seg,3));
+  scene.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x2a3550,transparent:true,opacity:0.55})));
+  const H={renderer};(function loop(){H.raf=requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();ORG3D=H;}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
+$('htrefresh').onclick=refreshHt;
+$('htaddbtn').onclick=addHt;
+$('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
-  ['dash','graph','timeline','diskurs','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
+  ['dash','graph','timeline','diskurs','globe','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
+  if(t.dataset.t!=='globe'){disposeScene(GLOBE);GLOBE=null;}
+  if(t.dataset.t!=='org'){disposeScene(ORG3D);ORG3D=null;}
   if(t.dataset.t==='graph') loadGraph();
   if(t.dataset.t==='timeline') renderTimeline();
   if(t.dataset.t==='diskurs'){loadDiscourseTopic();loadRadar();}
+  if(t.dataset.t==='globe') loadGlobe();
   if(t.dataset.t==='org') loadOrg();
   if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);
 });
@@ -464,6 +626,7 @@ setInterval(refresh,30000);
 
 
 def main():
+    _c = db.connect(DB_PATH); db.bootstrap(_c); hashtags.seed(_c); _c.close()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
     print(f"Pflege-Marktradar Viewer → http://localhost:{PORT}  (DB: {DB_PATH})", flush=True)

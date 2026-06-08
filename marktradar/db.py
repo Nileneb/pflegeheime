@@ -60,6 +60,17 @@ CREATE TABLE IF NOT EXISTS topic_positions (
     ord INTEGER,
     PRIMARY KEY (topic, label)
 );
+CREATE TABLE IF NOT EXISTS hashtags (
+    id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE, color TEXT,
+    active INTEGER DEFAULT 1, created TEXT
+);
+CREATE TABLE IF NOT EXISTS hashtag_posts (
+    id INTEGER PRIMARY KEY,
+    hashtag_id INTEGER REFERENCES hashtags(id),
+    source TEXT, url TEXT, author TEXT, content TEXT,
+    location_text TEXT, lat REAL, lon REAL, published TEXT, fetched_at TEXT,
+    UNIQUE(hashtag_id, url)
+);
 """
 
 VEC_SCHEMA = (

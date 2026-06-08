@@ -17,7 +17,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
-from marktradar import auth, db, ingest, organigram, query
+from marktradar import auth, db, hashtags, ingest, organigram, query
 
 INSTRUCTIONS = (
     "Pflege-Marktradar — Markt-Intelligence für den deutschen Pflegemarkt "
@@ -89,6 +89,7 @@ mcp = FastMCP("pflege-marktradar", instructions=INSTRUCTIONS,
 _conn = db.connect()
 db.bootstrap(_conn)
 organigram.seed(_conn)  # Bergische-Diakonie-Organigramm (idempotent)
+hashtags.seed(_conn)    # Hashtag-Set (idempotent)
 
 
 @mcp.tool()
@@ -214,6 +215,47 @@ def add_org_person(first_name: str, last_name: str, role: str | None = None,
     """Fügt eine Person einer Org-Einheit hinzu."""
     return organigram.add_person(_conn, first_name, last_name, role, unit_id, email,
                                  traeger=traeger)
+
+
+@mcp.tool()
+def list_hashtags() -> list[dict]:
+    """Beobachtete Hashtags mit Post-Anzahl + geokodierten Treffern."""
+    return hashtags.list_hashtags(_conn)
+
+
+@mcp.tool()
+def add_hashtag(term: str, color: str = "#5b8def") -> dict:
+    """Neuen Hashtag zur Beobachtung aufnehmen (CRUD). color = Hex für die Karten-Punkte."""
+    return hashtags.add(_conn, term, color)
+
+
+@mcp.tool()
+def update_hashtag(hashtag_id: int, term: str | None = None, color: str | None = None,
+                   active: bool | None = None) -> dict:
+    """Hashtag ändern: Begriff, Farbe oder aktiv/inaktiv schalten."""
+    return hashtags.update(_conn, hashtag_id, term, color, active)
+
+
+@mcp.tool()
+def delete_hashtag(hashtag_id: int) -> dict:
+    """Hashtag (samt aggregierter Posts) löschen."""
+    return hashtags.delete(_conn, hashtag_id)
+
+
+@mcp.tool()
+def refresh_hashtags(sources: list[str] | None = None, limit: int = 20) -> dict:
+    """Aggregiert echte Posts/Treffer je aktivem Hashtag aus öffentlichen Quellen
+    (mastodon, bluesky, news) und geokodiert sie für den Globus. Jeder Treffer trägt
+    seine ORIGINAL-URL. sources=None → alle drei."""
+    src = tuple(sources) if sources else ("mastodon", "bluesky", "news")
+    return hashtags.refresh(_conn, src, limit)
+
+
+@mcp.tool()
+def hashtag_map() -> dict:
+    """Geo-Punkte + Legende für die Hashtag-Weltkarte: pro Punkt lat/lon, Farbe,
+    Hashtag, Quelle und klickbare URL; je Hashtag Aktivität + echte Quell-Links."""
+    return hashtags.map_data(_conn)
 
 
 def main():

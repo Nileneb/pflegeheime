@@ -66,6 +66,9 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, query.graph_data(conn))
             elif u.path == "/api/discourse":
                 _json(self, query.discourse(conn))
+            elif u.path == "/api/positions":
+                _json(self, query.positions(conn, q.get("topic", [None])[0],
+                                            int(q.get("limit", ["120"])[0])))
             elif u.path == "/api/timeline":
                 name = q.get("name", [""])[0]
                 et = q.get("event_type", [None])[0]
@@ -179,6 +182,14 @@ svg text{font-family:inherit}
 .spark{margin-left:auto;display:flex;gap:2px;align-items:flex-end;height:24px}
 .sb{width:5px;background:var(--accent);border-radius:1px;display:block}
 .trm{font-size:11px;color:#8a93a3;margin-top:3px}.tre{font-size:11px;color:var(--accent);margin-top:2px}
+.tax{position:relative;margin-top:12px;width:100%}
+.tax-line{position:absolute;left:0;right:0;bottom:20px;height:2px;background:#2a3550}
+.tax-line:after{content:'▶';position:absolute;right:-3px;top:-7px;color:#46527a;font-size:11px}
+.tax-tick{position:absolute;bottom:2px;transform:translateX(-50%);font-size:9px;color:#5b6577;white-space:nowrap}
+.tax-tick:before{content:'';position:absolute;bottom:16px;left:50%;width:1px;height:7px;background:#2a3550}
+.tax-item{position:absolute;display:flex;align-items:center;gap:4px;font-size:10px;color:#cdd8e0;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;text-decoration:none;padding:1px 3px;border-radius:3px}
+.tax-item .d{width:9px;height:9px;border-radius:50%;flex:0 0 auto;border:1px solid #0a0e14}
+.tax-item:hover{z-index:30;color:#fff;background:#0f1622;box-shadow:0 0 0 1px #2a3550;max-width:none}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -218,14 +229,20 @@ svg text{font-family:inherit}
     <div id=positions class=positions></div>
     <div class=lgbar id=stancelegend></div>
   </div>
+  <div class=panel>
+    <div class=ph><span>POSITIONS-ZEITSTRAHL · WER HAT WAS WANN GESAGT</span><span class=muted id=postopic></span></div>
+    <div class=tlf id=posfilter></div>
+    <div class=lgbar id=poslegend></div>
+    <div id=postax class=muted>lädt…</div>
+  </div>
   <div class=panel><div class=ph><span>THEMEN / HASHTAG-RADAR · WER GREIFT WAS AUF</span></div><div id=radar></div></div>
 </section>
 
 <section id=timeline class=hide>
   <div class=panel>
-    <div class=ph><span>TIMELINE</span></div>
+    <div class=ph><span>ZEITSTRAHL · MELDUNGEN (Farbe = Event-Typ · Klick = Quelle)</span></div>
     <div class=tlf id=tlfilter></div>
-    <div id=tllist class=muted>Entität im Graph wählen oder Event-Filter klicken…</div>
+    <div id=tltax class=muted>lädt…</div>
   </div>
 </section>
 
@@ -276,19 +293,39 @@ async function selEntity(name){
   $('gdetail').innerHTML=`<div class=en>${esc(e.name)}</div><div class=et>${esc(e.type)} · ${e.article_count} Meldungen</div>`+
     (e.recent||[]).map(a=>`<div class=tlitem><span class=d style="background:${evc(a.event_type)}"></span><div><div>${esc((a.title||'').slice(0,54))}</div><div class=muted>${esc((a.published||'').slice(0,10))} · ${esc(a.event_type||'—')}</div></div></div>`).join('');
 }
+// ── Zeitstrahl-Helper: Items nach Datum verorten, lane-gestapelt, klickbar ──
+function renderTimeAxis(el, items, colorFn, labelFn){
+  items=(items||[]).map(i=>({i,t:Date.parse(i.published)})).filter(o=>!isNaN(o.t)).sort((a,b)=>a.t-b.t);
+  if(!items.length){el.className='muted';el.style.height='';el.textContent='keine datierten Einträge';return;}
+  el.className='tax';
+  let min=items[0].t,max=items[items.length-1].t; if(min===max){min-=864e5;max+=864e5;}
+  const span=max-min,rowH=20,top=4,gap=11,laneX=[];let maxLane=0;
+  const markers=items.map(({i,t})=>{
+    const x=2+95*(t-min)/span;let lane=0;while(lane<laneX.length&&x-laneX[lane]<gap)lane++;
+    laneX[lane]=x;if(lane>maxLane)maxLane=lane;const y=top+lane*rowH;
+    return `<a class=tax-item href="${esc(i.link||'#')}" target=_blank style="left:${x}%;top:${y}px" title="${esc((i.published||'').slice(0,10))} · ${esc(i.title||'')}"><span class=d style="background:${colorFn(i)}"></span>${esc(labelFn(i))}</a>`;
+  }).join('');
+  let ticks='';const y0=new Date(min).getUTCFullYear(),y1=new Date(max).getUTCFullYear();
+  for(let y=y0;y<=y1;y++)for(let m=0;m<12;m++){const tm=Date.UTC(y,m,1);if(tm<min||tm>max)continue;
+    const x=2+95*(tm-min)/span;ticks+=`<span class=tax-tick style="left:${x}%">${String(m+1).padStart(2,'0')}/${String(y).slice(2)}</span>`;}
+  el.style.height=(top+(maxLane+1)*rowH+30)+'px';
+  el.innerHTML=`<div class=tax-line></div>${ticks}${markers}`;
+}
 async function renderTimeline(){
   const types=['','insolvenz','politik','expansion','personalie','produkt','auszeichnung','schliessung'];
   $('tlfilter').innerHTML=types.map(t=>`<span class=tab style="padding:4px 10px${curEvent===t?';background:'+evc(t||'politik')+';color:#06142e':''}" onclick="curEvent='${t}';loadTimeline()">${t?t:'alle Events'}</span>`).join('');
   loadTimeline();
 }
 async function loadTimeline(){
-  let u;
-  if(curEntity){u='/api/timeline?name='+encodeURIComponent(curEntity)+(curEvent?'&event_type='+curEvent:'');}
-  else{u='/api/feed?limit=60';}
-  let items=await j(u);
-  if(curEvent && !curEntity) items=items.filter(a=>a.event_type===curEvent);
-  const head=curEntity?`<div class=muted style="margin-bottom:8px">Entität: <b style="color:#fff">${esc(curEntity)}</b> ${curEvent?'· '+curEvent:''} · <a onclick="curEntity=null;loadTimeline()" style="cursor:pointer;color:#5b8def">alle</a></div>`:'';
-  $('tllist').innerHTML=head+(items.length?items.map(a=>`<div class=tlitem><span class=d style="background:${evc(a.event_type)}"></span><div><a href="${esc(a.link||'#')}" target=_blank style="color:#e6edf2">${esc((a.title||'').slice(0,80))}</a><div class=muted>${esc((a.published||'').slice(0,10))} · ${esc(a.event_type||'—')} · ${esc(a.source_domain||'')}</div></div></div>`).join(''):'<span class=muted>keine Treffer</span>');
+  let items=await j('/api/feed?limit=120');
+  if(curEvent) items=items.filter(a=>a.event_type===curEvent);
+  renderTimeAxis($('tltax'), items, a=>evc(a.event_type), a=>(a.source_domain||'').replace('www.','').slice(0,22));
+}
+let curTopic='';
+async function loadPositions(){
+  const items=await j('/api/positions?limit=160'+(curTopic?'&topic='+encodeURIComponent(curTopic):''));
+  $('postopic').textContent=curTopic?('Thema: '+curTopic):(items.length+' Positionen');
+  renderTimeAxis($('postax'), items, p=>SC[p.stance]||'#7a8290', p=>p.entity);
 }
 
 const SC={kritisch:'#ff4d4d',fordernd:'#f0a830','befürwortend':'#2ecc71',neutral:'#7a8290'};
@@ -301,11 +338,16 @@ function posGraph(topic,nodes){
   if(!nodes.length) c='<text x=160 y=112 text-anchor=middle fill=#6b7689 font-size=11>noch keine Position</text>';
   return `<div class=pcard><svg viewBox="0 0 ${W} ${H}" width=100% height=200>${e}${c}<circle cx=${cx} cy=${cy} r=30 fill=#0f1622 stroke=#fff stroke-width=1.2 /><text x=${cx} y=${cy+3} text-anchor=middle fill=#fff font-size=9 font-weight=700>THEMA</text></svg><h4>${esc(topic)}</h4></div>`;
 }
+function stanceLegendHTML(){return Object.entries(SC).map(([k,v])=>`<span class=lg><span class=sw style="background:${v}"></span>${k}</span>`).join('');}
 async function loadDiscourse(){
   const d=await j('/api/discourse');
   $('disnote').textContent=d.note;
   $('positions').innerHTML=d.topics.map(t=>posGraph(t.topic,t.nodes)).join('');
-  $('stancelegend').innerHTML=Object.entries(SC).map(([k,v])=>`<span class=lg><span class=sw style="background:${v}"></span>${k}</span>`).join('');
+  $('stancelegend').innerHTML=stanceLegendHTML();
+  $('poslegend').innerHTML=stanceLegendHTML();
+  const tops=d.topics.map(t=>t.topic);
+  $('posfilter').innerHTML=['',...tops].map(t=>`<span class=tab style="padding:4px 10px${curTopic===t?';background:#5b8def;color:#06142e':''}" onclick="curTopic='${t}';loadDiscourse()">${t||'alle Themen'}</span>`).join('');
+  loadPositions();
   const tmax=Math.max(1,...d.terms.flatMap(t=>t.trend&&t.trend.length?t.trend:[0]));
   $('radar').innerHTML=d.terms.map(t=>{
     const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');

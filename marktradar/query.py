@@ -229,3 +229,20 @@ def discourse(conn) -> dict:
     terms.sort(key=lambda x: -x["count"])
     return {"topics": topics, "terms": terms,
             "note": "Stance via qwen-LLM pro Artikel (Thema-gegated)"}
+
+
+def positions(conn, topic: str | None = None, limit: int = 120) -> list[dict]:
+    """Artikel-Ebene: jede Position (Akteur + Haltung + Datum + Originallink) — für den
+    Diskurs-Zeitstrahl 'wer hat was wann gesagt', klickbar zur Quelle."""
+    sql = ("SELECT at.topic, e.name AS entity, e.type AS etype, at.stance, "
+           "a.published, a.title, a.link, a.source_domain "
+           "FROM article_topics at "
+           "JOIN article_entities ae ON ae.article_id = at.article_id "
+           "JOIN entities e ON e.id = ae.entity_id "
+           "JOIN articles a ON a.id = at.article_id "
+           "WHERE at.stance IS NOT NULL AND a.published IS NOT NULL")
+    params: list = []
+    if topic:
+        sql += " AND at.topic = ?"; params.append(topic)
+    sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]

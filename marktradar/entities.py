@@ -208,22 +208,82 @@ TOPIC_PREFILTER = {
 }
 _PREFILTER = {t: re.compile(p, re.I) for t, p in TOPIC_PREFILTER.items()}
 STANCE_LABELS = ("kritisch", "fordernd", "befürwortend", "neutral")
-_STANCE_SYS = (
-    "Du bestimmst die HALTUNG des Absenders einer Pflege-/Gesundheits-Meldung zu "
-    "vorgegebenen Themen. Pro Thema genau eine Haltung: 'kritisch' (lehnt ab/warnt), "
-    "'fordernd' (verlangt Maßnahmen), 'befürwortend' (unterstützt/begrüßt) oder "
-    "'neutral' (nur Bericht ohne Wertung). Antworte NUR als JSON-Objekt "
-    "{\"<thema>\": \"<haltung>\"} für genau die genannten Themen.")
+POS_PALETTE = ["#5b8def", "#2ecc71", "#f0a830", "#9b6dff", "#26c6da", "#ff7043",
+               "#ff4d4d", "#7a8290"]
+_SYNTH_SYS = (
+    "Du destillierst aus mehreren Schlagzeilen zu EINEM Pflege-/Gesundheits-Thema die "
+    "zentralen, wiederkehrenden POSITIONEN im Diskurs. Gib 4–6 prägnante Positionen "
+    "(label ≤ 6 Wörter, konkret, keine Dopplungen), je mit Tendenz 'pro' (befürwortet), "
+    "'contra' (lehnt ab/warnt) oder 'gemischt'. Antworte NUR als JSON-Liste: "
+    "[{\"label\":\"...\",\"valence\":\"pro|contra|gemischt\"}].")
+_CLS_SYS = (
+    "Du ordnest eine Meldung je Thema GENAU EINER der vorgegebenen Positionen zu "
+    "(oder 'sonstige') und bestimmst die Tendenz des Absenders: 'pro' (plädiert dafür), "
+    "'contra' (dagegen) oder 'neutral' (nur Bericht). Antworte NUR als JSON "
+    "{\"<thema>\": {\"position\":\"<eine Position oder sonstige>\", \"valence\":\"pro|contra|neutral\"}}.")
+
+
+def _vnorm(v: str) -> str:
+    v = str(v or "").lower()
+    if any(k in v for k in ("pro", "für", "befürwort", "unterstütz")):
+        return "pro"
+    if any(k in v for k in ("contra", "kontra", "gegen", "kritisch", "ablehn")):
+        return "contra"
+    return "neutral"
+
+
+def synthesize_positions(conn, sample: int = 40, min_hits: int = 3) -> dict:
+    """Destilliert je Thema 4–6 kanonische Positionen (mit Farbe + Tendenz) aus echten
+    Schlagzeilen → topic_positions. Gibt {topic: anzahl} zurück."""
+    out = {}
+    for topic, rgx in _PREFILTER.items():
+        rows = conn.execute(
+            "SELECT title, summary FROM articles "
+            "ORDER BY published DESC NULLS LAST LIMIT 800").fetchall()
+        hits = [r["title"] for r in rows if rgx.search(f"{r['title']} {r['summary'] or ''}")][:sample]
+        if len(hits) < min_hits:
+            continue
+        try:
+            payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
+                       "think": False, "messages": [
+                           {"role": "system", "content": _SYNTH_SYS},
+                           {"role": "user", "content":
+                            f"Thema: {topic}\nSchlagzeilen:\n" + "\n".join(f"- {h}" for h in hits)[:4000]}],
+                       "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 300}}
+            r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=120)
+            r.raise_for_status()
+            data = json.loads(r.json().get("message", {}).get("content", "") or "{}")
+            positions = data if isinstance(data, list) else data.get("positionen") or data.get("positions") or []
+        except Exception:
+            continue
+        conn.execute("DELETE FROM topic_positions WHERE topic=?", (topic,))
+        n = 0
+        for i, p in enumerate(positions[:6]):
+            label = str(p.get("label", "")).strip()[:60] if isinstance(p, dict) else str(p)[:60]
+            if not label:
+                continue
+            conn.execute("INSERT OR IGNORE INTO topic_positions(topic,label,valence,color,ord) "
+                         "VALUES (?,?,?,?,?)",
+                         (topic, label, _vnorm(p.get("valence") if isinstance(p, dict) else ""),
+                          POS_PALETTE[i % len(POS_PALETTE)], i))
+            n += 1
+        out[topic] = n
+    conn.commit()
+    return out
 
 
 def classify_topics(conn, article_ids=None) -> dict:
-    """Bestimmt je Artikel die Stance zu den Themen, die er (per Keyword-Gate) berührt,
-    via qwen → article_topics. Bounded: LLM nur auf Themen-Treffer. Idempotent
-    (überspringt bereits klassifizierte). Gibt {classified, failed} zurück."""
+    """Ordnet je Artikel pro berührtem Thema eine kanonische Position + Pro/Contra-Valenz
+    zu (qwen, Thema-gegated), UPSERT in article_topics. Gibt {classified, failed}."""
+    if not conn.execute("SELECT 1 FROM topic_positions LIMIT 1").fetchone():
+        synthesize_positions(conn)
+    pos_by_topic = {}
+    for r in conn.execute("SELECT topic, label FROM topic_positions ORDER BY ord").fetchall():
+        pos_by_topic.setdefault(r["topic"], []).append(r["label"])
     if article_ids is None:
         rows = conn.execute(
-            "SELECT id, title, summary FROM articles a "
-            "WHERE id NOT IN (SELECT article_id FROM article_topics)").fetchall()
+            "SELECT id, title, summary FROM articles WHERE id NOT IN "
+            "(SELECT article_id FROM article_topics WHERE position IS NOT NULL)").fetchall()
     else:
         if not article_ids:
             return {"classified": 0, "failed": 0}
@@ -234,17 +294,18 @@ def classify_topics(conn, article_ids=None) -> dict:
     classified = failed = 0
     for a in rows:
         text = f"{a['title'] or ''} {a['summary'] or ''}"
-        topics = [t for t, rgx in _PREFILTER.items() if rgx.search(text)]
+        topics = [t for t, rgx in _PREFILTER.items() if rgx.search(text) and pos_by_topic.get(t)]
         if not topics:
             continue
+        plist = "\n".join(f"{t}: {', '.join(pos_by_topic[t])}" for t in topics)
         try:
             payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
                        "think": False, "messages": [
-                           {"role": "system", "content": _STANCE_SYS},
+                           {"role": "system", "content": _CLS_SYS},
                            {"role": "user", "content":
-                            f"Themen: {', '.join(topics)}\nTitel: {a['title']}\n"
-                            f"Text: {a['summary'] or ''}"[:1600]}],
-                       "options": {"temperature": 0.0, "num_ctx": 2048, "num_predict": 160}}
+                            f"Positionen je Thema:\n{plist}\n\nTitel: {a['title']}\n"
+                            f"Text: {a['summary'] or ''}"[:1800]}],
+                       "options": {"temperature": 0.0, "num_ctx": 4096, "num_predict": 220}}
             r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=90)
             r.raise_for_status()
             d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
@@ -252,13 +313,18 @@ def classify_topics(conn, article_ids=None) -> dict:
             failed += 1
             continue
         for t in topics:
-            st = str(d.get(t, "neutral")).lower().strip()
-            if st not in STANCE_LABELS:
-                st = "neutral"
-            conn.execute("INSERT OR IGNORE INTO article_topics(article_id,topic,stance) "
-                         "VALUES (?,?,?)", (a["id"], t, st))
+            v = d.get(t) or {}
+            pos = str(v.get("position", "sonstige")).strip()[:60] if isinstance(v, dict) else "sonstige"
+            if pos not in pos_by_topic[t]:
+                pos = "sonstige"
+            val = _vnorm(v.get("valence") if isinstance(v, dict) else "")
+            conn.execute(
+                "INSERT INTO article_topics(article_id,topic,stance,valence,position) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(article_id,topic) DO UPDATE SET "
+                "stance=excluded.stance, valence=excluded.valence, position=excluded.position",
+                (a["id"], t, val, val, pos))
         classified += 1
-        if classified % 20 == 0:  # WHY: live-Fortschritt im Viewer + crash-safe
+        if classified % 15 == 0:
             conn.commit()
     conn.commit()
     return {"classified": classified, "failed": failed}

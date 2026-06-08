@@ -69,6 +69,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/positions":
                 _json(self, query.positions(conn, q.get("topic", [None])[0],
                                             int(q.get("limit", ["120"])[0])))
+            elif u.path == "/api/discourse_topics":
+                _json(self, query.discourse_topics(conn))
+            elif u.path == "/api/discourse_topic":
+                _json(self, query.discourse_topic(conn, q.get("topic", [""])[0]))
             elif u.path == "/api/timeline":
                 name = q.get("name", [""])[0]
                 et = q.get("event_type", [None])[0]
@@ -190,6 +194,14 @@ svg text{font-family:inherit}
 .tax-item{position:absolute;display:flex;align-items:center;gap:4px;font-size:10px;color:#cdd8e0;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;text-decoration:none;padding:1px 3px;border-radius:3px}
 .tax-item .d{width:9px;height:9px;border-radius:50%;flex:0 0 auto;border:1px solid #0a0e14}
 .tax-item:hover{z-index:30;color:#fff;background:#0f1622;box-shadow:0 0 0 1px #2a3550;max-width:none}
+.topnav{display:flex;align-items:center;gap:14px;margin:6px 0 12px}
+.navbtn{background:var(--pan);border:1px solid var(--ln);color:#fff;border-radius:6px;width:30px;height:30px;font-size:16px;cursor:pointer}
+.navbtn:hover{border-color:var(--accent);background:#13203a}
+.tname{font:600 16px Georgia,serif;color:#fff;min-width:230px}
+.vchart{position:relative;width:100%;margin-top:8px}
+.vbase{position:absolute;left:0;right:0;height:2px;background:#46527a}
+.vbase:after{content:'▶';position:absolute;right:-3px;top:-7px;color:#46527a;font-size:11px}
+.vlbl{position:absolute;left:0;font-size:9px;letter-spacing:1px;font-weight:600;background:var(--pan);padding-right:4px}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -225,15 +237,16 @@ svg text{font-family:inherit}
 </section>
 
 <section id=diskurs class=hide>
-  <div class=panel><div class=ph><span>POSITIONS-RADAR · WER VERTRITT WAS</span><span class=muted id=disnote></span></div>
-    <div id=positions class=positions></div>
-    <div class=lgbar id=stancelegend></div>
-  </div>
   <div class=panel>
-    <div class=ph><span>POSITIONS-ZEITSTRAHL · WER HAT WAS WANN GESAGT</span><span class=muted id=postopic></span></div>
-    <div class=tlf id=posfilter></div>
-    <div class=lgbar id=poslegend></div>
-    <div id=postax class=muted>lädt…</div>
+    <div class=ph><span>DISKURS · POSITIONEN ÜBER ZEIT</span><span class=muted>x = Zeit · y = pro ▲ / contra ▼ · Farbe = Position · Klick = Quelle</span></div>
+    <div class=topnav>
+      <button class=navbtn id=tprev>‹</button>
+      <span class=tname id=tname>…</span>
+      <button class=navbtn id=tnext>›</button>
+      <span class=muted id=dtnote></span>
+    </div>
+    <div class=lgbar id=dtlegend></div>
+    <div id=dtchart class=muted>lädt…</div>
   </div>
   <div class=panel><div class=ph><span>THEMEN / HASHTAG-RADAR · WER GREIFT WAS AUF</span></div><div id=radar></div></div>
 </section>
@@ -321,46 +334,54 @@ async function loadTimeline(){
   if(curEvent) items=items.filter(a=>a.event_type===curEvent);
   renderTimeAxis($('tltax'), items, a=>evc(a.event_type), a=>(a.source_domain||'').replace('www.','').slice(0,22));
 }
-let curTopic='';
-async function loadPositions(){
-  const items=await j('/api/positions?limit=160'+(curTopic?'&topic='+encodeURIComponent(curTopic):''));
-  $('postopic').textContent=curTopic?('Thema: '+curTopic):(items.length+' Positionen');
-  renderTimeAxis($('postax'), items, p=>SC[p.stance]||'#7a8290', p=>p.entity);
+// ── DISKURS: eine Themen-Seite, Pro/Contra-Zeitachse, Farbe = Position ──
+function renderValenceChart(el, items){
+  items=(items||[]).map(i=>({i,t:Date.parse(i.published)})).filter(o=>!isNaN(o.t)).sort((a,b)=>a.t-b.t);
+  if(!items.length){el.className='muted';el.style.height='';el.textContent='noch keine Positionen (Stance-Analyse läuft)';return;}
+  el.className='vchart';
+  let min=items[0].t,max=items[items.length-1].t; if(min===max){min-=864e5;max+=864e5;}
+  const span=max-min,rowH=19,gap=11,proX=[],conX=[],neuX=[];let proMax=0,conMax=0;
+  const placed=items.map(({i,t})=>{const x=2+95*(t-min)/span;
+    const v=i.valence==='pro'?'pro':i.valence==='contra'?'contra':'neutral';
+    const lanes=v==='pro'?proX:v==='contra'?conX:neuX;let lane=0;while(lane<lanes.length&&x-lanes[lane]<gap)lane++;lanes[lane]=x;
+    if(v==='pro'&&lane>proMax)proMax=lane;if(v==='contra'&&lane>conMax)conMax=lane;return {i,x,v,lane};});
+  const topPad=18,center=topPad+(proMax+1)*rowH;
+  const markers=placed.map(({i,x,v,lane})=>{
+    const y=v==='pro'?center-(lane+1)*rowH:v==='contra'?center+(lane+1)*rowH:center-9;
+    return `<a class=tax-item href="${esc(i.link||'#')}" target=_blank style="left:${x}%;top:${y}px" title="${esc((i.published||'').slice(0,10))} · ${esc(i.position||'')} (${esc(i.valence||'')}) · ${esc(i.title||'')}"><span class=d style="background:${i.color||'#7a8290'}"></span>${esc(i.entity)}</a>`;
+  }).join('');
+  let ticks='';const y0=new Date(min).getUTCFullYear(),y1=new Date(max).getUTCFullYear();
+  for(let y=y0;y<=y1;y++)for(let m=0;m<12;m++){const tm=Date.UTC(y,m,1);if(tm<min||tm>max)continue;
+    const x=2+95*(tm-min)/span;ticks+=`<span class=tax-tick style="left:${x}%;bottom:2px">${String(m+1).padStart(2,'0')}/${String(y).slice(2)}</span>`;}
+  el.style.height=(center+(conMax+1)*rowH+28)+'px';
+  el.innerHTML=`<div class=vbase style="top:${center}px"></div><span class=vlbl style="top:${center-15}px;color:#2ecc71">PRO ▲</span><span class=vlbl style="top:${center+5}px;color:#ff6b6b">CONTRA ▼</span>${ticks}${markers}`;
 }
-
-const SC={kritisch:'#ff4d4d',fordernd:'#f0a830','befürwortend':'#2ecc71',neutral:'#7a8290'};
-function posGraph(topic,nodes){
-  const W=320,H=230,cx=160,cy=112,R=78,mx=Math.max(1,...nodes.map(n=>n.count));
-  let e='',c='';
-  nodes.forEach((n,i)=>{const a=-Math.PI/2+2*Math.PI*i/Math.max(nodes.length,1);const x=cx+R*Math.cos(a),y=cy+R*Math.sin(a);const col=SC[n.stance]||'#7a8290';const rad=10+10*(n.count/mx);
-    e+=`<path d="M${cx} ${cy} L${x} ${y}" stroke="${col}" stroke-opacity="0.5" stroke-width="${1+2*n.count/mx}" />`;
-    c+=`<circle cx="${x}" cy="${y}" r="${rad}" fill="${col}33" stroke="${col}" stroke-width="2" /><text x="${x}" y="${y-rad-3}" text-anchor=middle fill=#e6edf2 font-size=9>${esc(n.name).slice(0,12)}</text>`;});
-  if(!nodes.length) c='<text x=160 y=112 text-anchor=middle fill=#6b7689 font-size=11>noch keine Position</text>';
-  return `<div class=pcard><svg viewBox="0 0 ${W} ${H}" width=100% height=200>${e}${c}<circle cx=${cx} cy=${cy} r=30 fill=#0f1622 stroke=#fff stroke-width=1.2 /><text x=${cx} y=${cy+3} text-anchor=middle fill=#fff font-size=9 font-weight=700>THEMA</text></svg><h4>${esc(topic)}</h4></div>`;
+let DTOPICS=[],dtIdx=0;
+async function loadDiscourseTopic(){
+  if(!DTOPICS.length){DTOPICS=await j('/api/discourse_topics');}
+  if(!DTOPICS.length){$('dtchart').className='muted';$('dtchart').textContent='Positionen werden synthetisiert…';return;}
+  dtIdx=((dtIdx%DTOPICS.length)+DTOPICS.length)%DTOPICS.length;
+  const topic=DTOPICS[dtIdx];
+  $('tname').textContent=topic+'  ('+(dtIdx+1)+'/'+DTOPICS.length+')';
+  const d=await j('/api/discourse_topic?topic='+encodeURIComponent(topic));
+  $('dtnote').textContent=d.note||'';
+  $('dtlegend').innerHTML=(d.legend||[]).map(p=>`<span class=lg><span class=sw style="background:${p.color}"></span>${esc(p.label)} <span style="color:${p.valence==='pro'?'#2ecc71':p.valence==='contra'?'#ff6b6b':'#7a8290'}">(${esc(p.valence)})</span></span>`).join('')||'<span class=muted>Positionen werden synthetisiert…</span>';
+  renderValenceChart($('dtchart'), d.items);
 }
-function stanceLegendHTML(){return Object.entries(SC).map(([k,v])=>`<span class=lg><span class=sw style="background:${v}"></span>${k}</span>`).join('');}
-async function loadDiscourse(){
+async function loadRadar(){
   const d=await j('/api/discourse');
-  $('disnote').textContent=d.note;
-  $('positions').innerHTML=d.topics.map(t=>posGraph(t.topic,t.nodes)).join('');
-  $('stancelegend').innerHTML=stanceLegendHTML();
-  $('poslegend').innerHTML=stanceLegendHTML();
-  const tops=d.topics.map(t=>t.topic);
-  $('posfilter').innerHTML=['',...tops].map(t=>`<span class=tab style="padding:4px 10px${curTopic===t?';background:#5b8def;color:#06142e':''}" onclick="curTopic='${t}';loadDiscourse()">${t||'alle Themen'}</span>`).join('');
-  loadPositions();
   const tmax=Math.max(1,...d.terms.flatMap(t=>t.trend&&t.trend.length?t.trend:[0]));
-  $('radar').innerHTML=d.terms.map(t=>{
-    const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
-    return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div>`+
-      `<div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div>`+
-      `<div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
+  $('radar').innerHTML=d.terms.map(t=>{const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
+    return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div><div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div><div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
 }
+$('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
+$('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
   ['dash','graph','timeline','diskurs'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
   if(t.dataset.t==='graph') loadGraph();
   if(t.dataset.t==='timeline') renderTimeline();
-  if(t.dataset.t==='diskurs') loadDiscourse();
+  if(t.dataset.t==='diskurs'){loadDiscourseTopic();loadRadar();}
 });
 $('markseen').onclick=async()=>{await fetch('/api/mark_seen',{method:'POST'});refresh();};
 

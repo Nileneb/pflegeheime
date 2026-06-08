@@ -1,10 +1,10 @@
 from marktradar import entities
 
 
-def _article(conn, title, summary="", relevant=1):
+def _article(conn, title, summary="", relevant=1, published="2026-06-01T08:00:00+00:00"):
     conn.execute("INSERT OR IGNORE INTO sources(name,type,url) VALUES('s','rss','http://x')")
-    cur = conn.execute("INSERT INTO articles(source_id,guid,title,summary,relevant) "
-                       "VALUES (1,?,?,?,?)", (title, title, summary, relevant))
+    cur = conn.execute("INSERT INTO articles(source_id,guid,title,summary,relevant,published) "
+                       "VALUES (1,?,?,?,?,?)", (title, title, summary, relevant, published))
     conn.commit()
     return cur.lastrowid
 
@@ -49,31 +49,41 @@ def test_classify_events_backfill(conn):
     assert row["event_type"] == "insolvenz"
 
 
-def test_classify_topics_stores_llm_stance(conn, monkeypatch):
-    aid = _article(conn, "Verband kritisiert Pflegereform scharf")
+class _Resp:
+    def __init__(self, c): self._c = c
+    def raise_for_status(self): pass
+    def json(self): return {"message": {"content": self._c}}
 
-    class R:
-        def raise_for_status(self): pass
-        def json(self): return {"message": {"content": '{"Pflegereform":"kritisch"}'}}
-    monkeypatch.setattr(entities.requests, "post", lambda *a, **k: R())
+
+def _fake_llm(*a, **k):
+    """Mock: synth-Prompt → Positions-Liste; classify-Prompt → {topic:{position,valence}}."""
+    sysmsg = k["json"]["messages"][0]["content"]
+    if "destillierst" in sysmsg:
+        return _Resp('[{"label":"Mehr Personal","valence":"pro"}]')
+    return _Resp('{"Personal & Fachkräfte":{"position":"Mehr Personal","valence":"pro"}}')
+
+
+def test_classify_topics_stores_position_and_valence(conn, monkeypatch):
+    aid = _article(conn, "Verband fordert mehr Personal in der Pflege")
+    monkeypatch.setattr(entities.requests, "post", _fake_llm)
+    entities.synthesize_positions(conn, min_hits=1)
     rep = entities.classify_topics(conn)
     assert rep["classified"] >= 1
-    row = conn.execute("SELECT stance FROM article_topics WHERE article_id=? AND topic='Pflegereform'",
-                       (aid,)).fetchone()
-    assert row["stance"] == "kritisch"
+    row = conn.execute("SELECT position, valence FROM article_topics "
+                       "WHERE article_id=? AND topic='Personal & Fachkräfte'", (aid,)).fetchone()
+    assert row["position"] == "Mehr Personal"
+    assert row["valence"] == "pro"
 
 
-def test_discourse_aggregates_party_stance(conn, monkeypatch):
+def test_discourse_topic_legend_and_items(conn, monkeypatch):
     from marktradar import query
     entities.seed_entities(conn)
     _article(conn, "CDU fordert mehr Personal in der Pflege")
     entities.tag_articles(conn)
-
-    class R:
-        def raise_for_status(self): pass
-        def json(self): return {"message": {"content": '{"Personal & Fachkräfte":"fordernd"}'}}
-    monkeypatch.setattr(entities.requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(entities.requests, "post", _fake_llm)
+    entities.synthesize_positions(conn, min_hits=1)
     entities.classify_topics(conn)
-    d = query.discourse(conn)
-    pers = [t for t in d["topics"] if t["topic"] == "Personal & Fachkräfte"][0]
-    assert any(n["name"] == "CDU" and n["stance"] == "fordernd" for n in pers["nodes"])
+    d = query.discourse_topic(conn, "Personal & Fachkräfte")
+    assert any(p["label"] == "Mehr Personal" for p in d["legend"])
+    assert any(it["entity"] == "CDU" and it["valence"] == "pro" and
+               it["position"] == "Mehr Personal" for it in d["items"])

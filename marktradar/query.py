@@ -246,3 +246,31 @@ def positions(conn, topic: str | None = None, limit: int = 120) -> list[dict]:
         sql += " AND at.topic = ?"; params.append(topic)
     sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def discourse_topics(conn) -> list[str]:
+    """Themen mit synthetisierten Positionen (für die ‹ ›-Navigation)."""
+    from marktradar import entities
+    have = {r["topic"] for r in conn.execute("SELECT DISTINCT topic FROM topic_positions").fetchall()}
+    ordered = [t for t in entities.TOPIC_PREFILTER if t in have]
+    return ordered or list(entities.TOPIC_PREFILTER)
+
+
+def discourse_topic(conn, topic: str) -> dict:
+    """Eine Themen-Seite: kanonische Positionen (Legende mit Farbe+Tendenz) + Items
+    auf der Zeit/Valenz-Achse (x=Datum, y=pro/contra), klickbar zur Quelle."""
+    legend = [dict(r) for r in conn.execute(
+        "SELECT label, valence, color FROM topic_positions WHERE topic=? ORDER BY ord",
+        (topic,)).fetchall()]
+    items = [dict(r) for r in conn.execute(
+        "SELECT a.published, a.title, a.link, a.source_domain, e.name AS entity, "
+        "e.type AS etype, at.position, at.valence, tp.color "
+        "FROM article_topics at "
+        "JOIN article_entities ae ON ae.article_id = at.article_id "
+        "JOIN entities e ON e.id = ae.entity_id "
+        "JOIN articles a ON a.id = at.article_id "
+        "LEFT JOIN topic_positions tp ON tp.topic = at.topic AND tp.label = at.position "
+        "WHERE at.topic = ? AND at.position IS NOT NULL AND a.published IS NOT NULL "
+        "ORDER BY a.published DESC LIMIT 220", (topic,)).fetchall()]
+    return {"topic": topic, "legend": legend, "items": items,
+            "note": "Positionen via qwen aus echten Schlagzeilen destilliert; y = pro/contra"}

@@ -39,7 +39,17 @@ CREATE TABLE IF NOT EXISTS article_topics (
     article_id INTEGER REFERENCES articles(id),
     topic TEXT NOT NULL,
     stance TEXT,
+    valence TEXT,
+    position TEXT,
     PRIMARY KEY (article_id, topic)
+);
+CREATE TABLE IF NOT EXISTS topic_positions (
+    topic TEXT NOT NULL,
+    label TEXT NOT NULL,
+    valence TEXT,
+    color TEXT,
+    ord INTEGER,
+    PRIMARY KEY (topic, label)
 );
 """
 
@@ -84,6 +94,13 @@ def bootstrap(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.execute(VEC_SCHEMA)
     conn.executescript(LEGACY_SCHEMA)
+    # WHY: idempotente Migration für bestehende DBs (CREATE TABLE IF NOT EXISTS
+    # ergänzt keine neuen Spalten auf existierender article_topics-Tabelle).
+    for col in ("valence", "position"):
+        try:
+            conn.execute(f"ALTER TABLE article_topics ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 

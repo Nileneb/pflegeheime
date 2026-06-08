@@ -160,3 +160,16 @@ Neues Feld `connections` (explizite Endpunkte, nicht Term-Paare): `[{a_lat,a_lon
   je Sprache; `connections` (concept+cluster) Shape + Cap. Chat/HTTP gemockt.
 - Deploy + EIN sofortiger multilingualer Refresh → Posts in mehreren Ländern, `connections` nicht leer,
   Globe zeigt Netz (Screenshot). Auto-Refresh-Thread im mcp-pflege-Log sichtbar.
+
+## T5 — Alters-Decay der Marker (visuelles Verfallsdatum)
+User: Quellen bleiben grundsätzlich in der DB (Irrelevantes geht im Rauschen unter), ABER
+Posts/Marker sollen mit dem Alter **schwächer leuchten** und nach einem **Verfallsdatum
+ganz verschwinden** — rein visuell, KEIN DB-Löschen.
+- Datenbasis: `point.published` (ISO) ist bereits in `map_data`-Points enthalten.
+- **Frontend (`viewer.py`):** pro Marker `age = now - published`; Helligkeit/Opazität
+  `*= decay(age)` (linear oder exp, z.B. `max(0, 1 - age/EXPIRY)`); Marker mit `age > EXPIRY`
+  werden NICHT gerendert ("verschwinden"). Gilt auch für den Glow.
+- **Connections** erben die Frische: Arc-Gewicht/Helligkeit ∝ Frische der beteiligten Posts
+  (alte Verbindungen verblassen mit).
+- `EXPIRY` env-konfigurierbar (`PFLEGE_POST_EXPIRY_DAYS`, default z.B. 21). 0 = aus (alles zeigen).
+- DB bleibt unangetastet (kein Prune); nur Anzeige filtert/dimmt.

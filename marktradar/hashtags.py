@@ -257,22 +257,60 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
     return {"added": added, "per_source": per_source, "tags": len(tags), "errors": errors}
 
 
+# ── Trends: News gegen Hashtags matchen → Häufigkeit + Ko-Vorkommen → Gewicht ──
+def trends(conn):
+    """Jeder News-Artikel = Event; welche aktiven Hashtags drin vorkommen wird gezählt,
+    und gemeinsames Vorkommen zweier Hashtags (Kombination) erhöht das Gewicht. Anzahl +
+    Kombination bestimmen die Trend-Stärke (→ Pulsieren)."""
+    tags = [dict(r) for r in conn.execute(
+        "SELECT id,term,color FROM hashtags WHERE active=1").fetchall()]
+    pats = [(t, re.compile(r"\b" + re.escape(t["term"]) + r"\w*", re.I)) for t in tags]
+    counts = {t["id"]: 0 for t in tags}
+    pairs = {}
+    for a in conn.execute("SELECT title,summary FROM articles ORDER BY published DESC LIMIT 2500").fetchall():
+        text = f"{a['title'] or ''} {a['summary'] or ''}"
+        hit = [t["id"] for (t, p) in pats if p.search(text)]
+        for hid in hit:
+            counts[hid] += 1
+        for i in range(len(hit)):
+            for j in range(i + 1, len(hit)):
+                k = (hit[i], hit[j]) if hit[i] < hit[j] else (hit[j], hit[i])
+                pairs[k] = pairs.get(k, 0) + 1
+    cooc = {t["id"]: 0 for t in tags}
+    for (a, b), n in pairs.items():
+        cooc[a] += n
+        cooc[b] += n
+    tm = {t["id"]: t for t in tags}
+    weights = {tid: round(counts[tid] + 0.6 * cooc[tid], 1) for tid in counts}
+    top = sorted(pairs.items(), key=lambda x: -x[1])[:14]
+    return {
+        "weights": {tid: {"term": tm[tid]["term"], "color": tm[tid]["color"],
+                          "count": counts[tid], "cooc": cooc[tid], "weight": weights[tid]}
+                    for tid in counts},
+        "pairs": [{"a": tm[a]["term"], "b": tm[b]["term"], "ca": tm[a]["color"],
+                   "cb": tm[b]["color"], "n": n} for (a, b), n in top if n > 0],
+    }
+
+
 # ── Map-Daten für den Globus ──
 def map_data(conn, max_points=600):
     tags = {r["id"]: dict(r) for r in conn.execute(
         "SELECT id,term,color,active FROM hashtags").fetchall()}
-    # Aktivität je Hashtag (Gesamt + geo)
     counts = {}
     for r in conn.execute(
             "SELECT hashtag_id, count(*) n, sum(CASE WHEN lat IS NOT NULL THEN 1 ELSE 0 END) geo "
             "FROM hashtag_posts GROUP BY hashtag_id").fetchall():
         counts[r["hashtag_id"]] = (r["n"], r["geo"])
+    tr = trends(conn)
+    W = tr["weights"]
+    maxw = max([w["weight"] for w in W.values()] + [1.0])
     legend = []
     for tid, t in tags.items():
         n, geo = counts.get(tid, (0, 0))
-        legend.append({**t, "count": n, "geo": geo})
-    legend.sort(key=lambda x: -x["count"])
-    # Geo-Punkte (neueste zuerst, intensitäts-gewichtet nach Recency)
+        w = W.get(tid, {})
+        legend.append({**t, "count": n, "geo": geo, "news": w.get("count", 0),
+                       "cooc": w.get("cooc", 0), "weight": w.get("weight", 0)})
+    legend.sort(key=lambda x: -(x["weight"] + x["count"]))
     rows = conn.execute(
         "SELECT p.hashtag_id,p.source,p.url,p.author,p.content,p.lat,p.lon,p.published "
         "FROM hashtag_posts p WHERE p.lat IS NOT NULL "
@@ -280,12 +318,13 @@ def map_data(conn, max_points=600):
     points = []
     for r in rows:
         t = tags.get(r["hashtag_id"], {})
+        wn = (W.get(r["hashtag_id"], {}).get("weight", 0) / maxw) if maxw else 0
         points.append({
             "lat": r["lat"], "lon": r["lon"], "color": t.get("color", "#5b8def"),
             "term": t.get("term", "?"), "source": r["source"], "url": r["url"],
             "author": r["author"], "content": r["content"], "published": r["published"],
+            "weight": round(wn, 3),  # 0..1 Trend-Stärke → Pulsieren
         })
-    # Quellen je Hashtag (echte URLs, neueste zuerst) für die Legende
     sources = {}
     for r in conn.execute(
             "SELECT hashtag_id,source,url,author,content,published FROM hashtag_posts "
@@ -293,5 +332,5 @@ def map_data(conn, max_points=600):
         sources.setdefault(r["hashtag_id"], [])
         if len(sources[r["hashtag_id"]]) < 12:
             sources[r["hashtag_id"]].append(dict(r))
-    return {"legend": legend, "points": points, "sources": sources,
+    return {"legend": legend, "points": points, "sources": sources, "trends": tr["pairs"],
             "total_posts": sum(c[0] for c in counts.values())}

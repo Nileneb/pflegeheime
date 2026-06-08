@@ -370,6 +370,10 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .htrow .nm{color:#e6ebf2;cursor:pointer}.htrow.off .nm{color:var(--mut);text-decoration:line-through}
 .htrow .ct{margin-left:auto;color:var(--mut);font-size:10px}
 .htrow .geo{color:#2ecc71;font-size:9px}
+.htrow .trw{color:#f0a830;font-size:9px;margin-left:2px}
+.trrow{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #131c2a;font-size:11px}
+.trrow .trplus{color:var(--mut)}.trrow .trn{margin-left:auto;color:#fff;font-size:10px}
+.trrow .trtag{font-weight:600}
 .htrow .tog,.htrow .x{cursor:pointer;font-size:13px;padding:0 2px}.htrow .x{color:#ff6b6b}
 .htsrc{display:block;padding:6px 0;border-bottom:1px solid #131c2a;font-size:11px}
 .htsrc .sm{color:var(--mut);font-size:10px}
@@ -472,6 +476,10 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
         <div class=ph><span>HASHTAGS</span><button class=btn id=htrefresh>↻ Quellen abrufen</button></div>
         <div class=htadd><input id=htterm placeholder="neuer-hashtag" class=htin><input id=htcolor type=color value="#5b8def"><button class=btn id=htaddbtn>+ </button></div>
         <div id=htlist class=muted>lädt…</div>
+      </div>
+      <div class=panel>
+        <div class=ph><span>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span></div>
+        <div id=httrends class=muted>—</div>
       </div>
       <div class=panel>
         <div class=ph><span id=htsrc_title>QUELLEN · echte Links</span></div>
@@ -652,12 +660,15 @@ function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.s
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
 let HTDATA=null, GLOBE=null;
-async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();initGlobe(HTDATA.points);
+async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();renderTrends();initGlobe(HTDATA.points);
   $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
+function renderTrends(){const pr=(HTDATA&&HTDATA.trends)||[];$('httrends').className=pr.length?'':'muted';
+  $('httrends').innerHTML=pr.map(p=>`<div class=trrow><span class=trtag style="color:${p.ca}">#${esc(p.a)}</span><span class=trplus>+</span><span class=trtag style="color:${p.cb}">#${esc(p.b)}</span><span class=trn>${p.n}×</span></div>`).join('')||'noch keine Kombinationen';}
 function renderHtLegend(){const d=HTDATA;$('htlist').className='';
-  $('htlist').innerHTML=d.legend.map(t=>`<div class="htrow${t.active?'':' off'}">`+
+  $('htlist').innerHTML=d.legend.map(t=>`<div class="htrow${t.active?'':' off'}" title="News-Treffer: ${t.news||0} · Ko-Vorkommen: ${t.cooc||0} · Gewicht: ${t.weight||0}">`+
     `<input type=color class=swc value="${t.color}" onchange="setColor(${t.id},this.value)" title="Farbe ändern">`+
     `<span class=nm onclick="showHtSources(${t.id},'${esc(t.term).replace(/'/g,'')}')">#${esc(t.term)}</span>`+
+    `${t.weight>0?`<span class=trw title="Trend-Gewicht">🔥${t.weight}</span>`:''}`+
     `<span class=geo>${t.geo}📍</span><span class=ct>${t.count}</span>`+
     `<span class=tog onclick="toggleHt(${t.id},${t.active?0:1})" title="aktiv/inaktiv">${t.active?'◉':'○'}</span>`+
     `<span class=x onclick="delHt(${t.id},this)" title="löschen — nochmal klick = weg">✕</span></div>`).join('')||'<span class=muted>keine Hashtags</span>';}
@@ -716,9 +727,9 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const pgeo=new THREE.SphereGeometry(1,8,8);const N=Math.max(1,points.length);
   points.forEach((p,idx)=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
-    const base=0.006+0.013*inten,disc=idx/N;  // disc = Reihenfolge im Discovery-Sweep
+    const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w),disc=idx/N;  // Trend-Gewicht → Größe
     const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col}));m.position.copy(pos);m.scale.setScalar(base);
-    m.userData={url:p.url,base,inten,disc,_b:0};group.add(m);
+    m.userData={url:p.url,base,inten,disc,_b:0,weight:w};group.add(m);
     const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.18,blending:THREE.AdditiveBlending,depthWrite:false}));
     halo.position.copy(pos);halo.userData={host:m};group.add(halo);});
   const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
@@ -737,8 +748,8 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
       else{const u=m.userData;
         // Discovery-Sweep: bei „Entdeckung" kurzes Aufblitzen (paar Pulse), dann auf schwache
         // Dauerhelligkeit abklingen → man sieht die reale Verbreitung. Gestaffelt über CYCLE.
-        const ta=((t - u.disc*CYCLE)%CYCLE+CYCLE)%CYCLE;
-        let b;if(ta<2.4){const env=1-ta/2.4;b=0.22+0.78*env*(0.5+0.5*Math.sin(ta*9));}else{b=0.16;}
+        const ta=((t - u.disc*CYCLE)%CYCLE+CYCLE)%CYCLE;const wf=0.55+0.85*u.weight;  // Trend → heller
+        let b;if(ta<2.4){const env=1-ta/2.4;b=(0.22+0.78*env*(0.5+0.5*Math.sin(ta*9)))*wf;}else{b=0.1+0.32*u.weight;}
         u._b=b;m.scale.setScalar(u.base*zoomF*(0.6+0.9*b));}
     });
     controls.update();renderer.render(scene,camera);})();

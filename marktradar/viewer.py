@@ -472,6 +472,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .scload{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:var(--mut);font-size:12px;z-index:4}
 .schide{display:none}
 #org3dtip{position:fixed;display:none;z-index:600;background:#0f1622ee;border:1px solid var(--ln);border-radius:6px;padding:5px 9px;font-size:11px;color:#fff;pointer-events:none;max-width:240px}
+#globetip{position:fixed;display:none;z-index:600;background:#0b1220ee;border:1px solid var(--ln);border-radius:7px;padding:6px 11px;font-size:12px;color:#fff;pointer-events:none;max-width:280px;backdrop-filter:blur(4px);line-height:1.5}
 #reskinov{position:absolute;inset:0;background:#05080fe8;z-index:7;display:flex;align-items:center;justify-content:center}
 .rkbox{background:var(--pan);border:1px solid var(--ln);border-radius:10px;padding:18px;width:min(740px,92vw)}
 .rkhd{display:flex;flex-direction:column;gap:3px;margin-bottom:12px}.rkhd b{color:#fff;font-size:14px}
@@ -623,6 +624,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
   </div>
 </div>
 
+<div id=globetip></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
@@ -742,7 +744,10 @@ function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antia
 function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180;
   return new THREE.Vector3(-r*Math.sin(phi)*Math.cos(th),r*Math.cos(phi),r*Math.sin(phi)*Math.sin(th));}
 function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.style.display='none';
+  const gt=document.getElementById('globetip');if(gt)gt.style.display='none';
   if(h){cancelAnimationFrame(h.raf);
+    if(h._mmHandler&&h.renderer)h.renderer.domElement.removeEventListener('mousemove',h._mmHandler);
+    if(h._mlHandler&&h.renderer)h.renderer.domElement.removeEventListener('mouseleave',h._mlHandler);
     if(h.arcs)h.arcs.forEach(o=>{o.tube.geometry.dispose();o.tubeMat.dispose();o.glow.geometry.dispose();o.glowMat.dispose();});
     if(h.langTex)h.langTex.dispose();if(h.langMat)h.langMat.dispose();if(h.langGeo)h.langGeo.dispose();
     if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
@@ -750,6 +755,48 @@ function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.s
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
 let HTDATA=null, GLOBE=null, ARCS_ON=true, LANG_ON=true, LANGGEO=null;
+
+// ── Point-in-Polygon (ray-casting, lon/lat, handles Polygon+MultiPolygon+holes) ──
+function pipRing(lon,lat,ring){
+  // Standard ray-cast: count crossings of a horizontal ray to the right.
+  let inside=false;
+  for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+    const xi=ring[i][0],yi=ring[i][1],xj=ring[j][0],yj=ring[j][1];
+    if(((yi>lat)!==(yj>lat))&&(lon<(xj-xi)*(lat-yi)/(yj-yi)+xi))inside=!inside;
+  }
+  return inside;
+}
+function pipPolygon(lon,lat,coords){
+  // coords = array of rings; first = exterior, rest = holes.
+  // evenodd: exterior must contain point, holes flip it back → same as checking
+  // exterior AND NOT any hole.
+  if(!pipRing(lon,lat,coords[0]))return false;
+  for(let h=1;h<coords.length;h++){if(pipRing(lon,lat,coords[h]))return false;}
+  return true;
+}
+function resolveCountryIso(lon,lat,features){
+  for(let i=0;i<features.length;i++){
+    const f=features[i];const g=f.geometry;if(!g)continue;
+    const pr=f.properties||{};
+    const iso=(pr.ISO_A2_EH&&pr.ISO_A2_EH!=='-99')?pr.ISO_A2_EH:pr.ISO_A2;
+    if(!iso||iso==='-99')continue;
+    const polys=g.type==='Polygon'?[g.coordinates]:g.type==='MultiPolygon'?g.coordinates:[];
+    for(let p=0;p<polys.length;p++){if(pipPolygon(lon,lat,polys[p]))return iso;}
+  }
+  return null;
+}
+function precomputeMarkerLangs(markers,lgData,htLangs){
+  // Build lang code set for fast fallback check.
+  const validLangs=new Set((htLangs||[]).map(l=>l.code));
+  const features=(lgData&&lgData.geojson&&lgData.geojson.features)||[];
+  const clMap=(lgData&&lgData.country_language)||{};
+  markers.forEach(m=>{
+    const iso=resolveCountryIso(m.userData.lon,m.userData.lat,features);
+    let lang=iso?clMap[iso]:null;
+    if(!lang||!validLangs.has(lang))lang=validLangs.has('en')?'en':(validLangs.size?[...validLangs][0]:'de');
+    m.userData.lang=lang;
+  });
+}
 // Soft language overlay: paint country polygons by language color onto an equirect
 // canvas, blur it, drape as a translucent texture on a sphere slightly above earth.
 async function ensureLangGeo(){if(LANGGEO===null){try{LANGGEO=await j('api/langgeo');}catch(e){console.warn('langgeo load failed',e);LANGGEO=false;}}return LANGGEO;}
@@ -861,7 +908,7 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     const bright=0.55+0.45*w;
     const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col.clone().multiplyScalar(bright)}));
     m.position.copy(pos);m.scale.setScalar(base);
-    m.userData={url:p.url,base,weight:w};group.add(m);
+    m.userData={url:p.url,base,weight:w,term:p.term,lat:p.lat,lon:p.lon};group.add(m);
     const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.16+0.12*w,blending:THREE.AdditiveBlending,depthWrite:false}));
     halo.position.copy(pos);halo.scale.setScalar(base*2.7);halo.userData={host:m};group.add(halo);});
   // ── Ko-Vorkommen-Arcs: Centroid je Hashtag-Term (Mittel der Einheitsvektoren → Antimeridian-sicher) ──
@@ -902,7 +949,47 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
     if(hit)window.open(hit.object.userData.url,'_blank');});
-  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS};let frame=0;
+  // ── Localized hover tooltip ──
+  const gtip=document.getElementById('globetip');
+  // Collect only the source marker meshes (they have .userData.term; halos have .userData.host).
+  const srcMarkers=group.children.filter(m=>m.userData.term);
+  let _mmLast=0;
+  const _mmHandler=ev=>{
+    const now=Date.now();if(now-_mmLast<40)return;_mmLast=now;  // ~25fps throttle
+    const r=renderer.domElement.getBoundingClientRect();
+    mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(mouse,camera);
+    const hits=ray.intersectObjects(srcMarkers);
+    const hit=hits.length?hits[0]:null;
+    if(hit){
+      const ud=hit.object.userData;
+      const lang=ud.lang||'de';
+      const translations=(HTDATA&&HTDATA.translations&&HTDATA.translations[ud.term])||{};
+      const localized=translations[lang];
+      let label;
+      if(localized&&localized!==ud.term){label='<b>'+esc(localized)+'</b><span style="color:var(--mut);font-size:10px"> (#'+esc(ud.term)+')</span>';}
+      else{label='<b>#'+esc(ud.term)+'</b>';}
+      const langLabel=lang&&lang!=='de'?'<span style="color:var(--mut);font-size:10px"> · '+esc(lang)+'</span>':'';
+      gtip.innerHTML=label+langLabel;
+      // Position near cursor but keep within viewport.
+      const tw=gtip.offsetWidth||160,th=gtip.offsetHeight||40;
+      const vw=window.innerWidth,vh=window.innerHeight;
+      let tx=ev.clientX+14,ty=ev.clientY+14;
+      if(tx+tw>vw-8)tx=ev.clientX-tw-10;
+      if(ty+th>vh-8)ty=ev.clientY-th-10;
+      gtip.style.left=tx+'px';gtip.style.top=ty+'px';
+      gtip.style.display='block';
+      renderer.domElement.style.cursor='pointer';
+    }else{
+      gtip.style.display='none';
+      renderer.domElement.style.cursor='grab';}
+  };
+  const _mlHandler=()=>{gtip.style.display='none';renderer.domElement.style.cursor='grab';};
+  renderer.domElement.addEventListener('mousemove',_mmHandler);
+  renderer.domElement.addEventListener('mouseleave',_mlHandler);
+  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS,_mmHandler,_mlHandler};
+  // Precompute language per marker once langgeo is available.
+  ensureLangGeo().then(lg=>{if(lg&&GLOBE===H)precomputeMarkerLangs(srcMarkers,lg,(HTDATA&&HTDATA.languages)||[]);});let frame=0;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
     if((frame++%120)===0)updateSun();
     // Zoom-relativ: nah dran → Punkte kleiner (sonst füllen sie den Schirm). Quellen bleiben ruhig.

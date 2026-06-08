@@ -7,6 +7,7 @@ Hashtags sind CRUD-fähig (Tabelle `hashtags`), Posts liegen in `hashtag_posts`.
 """
 import html as _html
 import json
+import os
 import re
 import sys
 import urllib.parse

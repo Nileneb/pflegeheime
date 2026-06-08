@@ -7,3 +7,4 @@ dnspython>=2.4
 sqlite-vec>=0.1.6
 mcp>=1.2
 pytest>=8.0
+PyJWT[crypto]>=2.8

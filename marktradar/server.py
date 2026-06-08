@@ -96,9 +96,13 @@ def render_chart(topic: str) -> Image:
 def main():
     transport = os.getenv("PFLEGE_MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
-        mcp.settings.host = os.getenv("PFLEGE_MCP_HOST", "127.0.0.1")
-        mcp.settings.port = int(os.getenv("PFLEGE_MCP_PORT", "8766"))
-        mcp.run(transport="streamable-http")
+        import uvicorn
+
+        from marktradar.auth import JWTAuthMiddleware
+        app = mcp.streamable_http_app()
+        app.add_middleware(JWTAuthMiddleware)  # RS256-JWT (app.linn.games), ?token= ok
+        uvicorn.run(app, host=os.getenv("PFLEGE_MCP_HOST", "127.0.0.1"),
+                    port=int(os.getenv("PFLEGE_MCP_PORT", "8088")))
     else:
         mcp.run()
 

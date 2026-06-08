@@ -159,10 +159,16 @@ def discourse_topics() -> list[str]:
 
 @mcp.tool()
 def render_chart(topic: str) -> Image:
-    """Rendert die Diskurs-Positionen eines Themas als SVG (x=Zeit, y=pro/contra,
-    Farbe=Position) — server-seitig, kein Browser. Themen via discourse_topics()."""
-    svg = query.render_topic_svg(_conn, topic)
-    return Image(data=svg.encode("utf-8"), format="svg+xml")
+    """Rendert die Diskurs-Positionen eines Themas als PNG (x=Zeit, y=pro/contra,
+    Farbe=Position) — server-seitig (SVG→PNG via cairosvg, kein Browser, schnell,
+    zuverlässig). Themen via discourse_topics()."""
+    svg = query.render_topic_svg(_conn, topic, width=1200)
+    try:
+        import cairosvg
+        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"), output_width=1200)
+        return Image(data=png, format="png")
+    except Exception:  # WHY: ohne cairo (dev) → SVG-Fallback, Tool bleibt nutzbar
+        return Image(data=svg.encode("utf-8"), format="svg+xml")
 
 
 @mcp.tool()

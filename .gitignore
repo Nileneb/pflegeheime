@@ -5,4 +5,8 @@ output/
 scraper.log
 .env
 .~lock.*
+pflege.db
+pflege.db-wal
+pflege.db-shm
+.pytest_cache/
 

@@ -269,10 +269,11 @@ def tag_articles(conn, article_ids=None, auto_create=False, limit=400):
     tags = [dict(r) for r in conn.execute("SELECT id,term FROM hashtags WHERE active=1").fetchall()]
     pats = [(t["id"], re.compile(r"\b" + re.escape(t["term"]) + r"\w*", re.I)) for t in tags]
     if article_ids is None:
+        # relevante zuerst (auto_create lohnt nur dort), dann neueste
         rows = conn.execute(
             "SELECT id,title,summary,relevant FROM articles "
             "WHERE id NOT IN (SELECT article_id FROM article_hashtags) "
-            "ORDER BY published DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY relevant DESC, published DESC LIMIT ?", (limit,)).fetchall()
     else:
         if not article_ids:
             return {"linked": 0, "created": 0, "articles": 0}

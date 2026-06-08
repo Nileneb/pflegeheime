@@ -103,6 +103,24 @@ PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
 HOST = os.getenv("PFLEGE_VIEWER_HOST", "127.0.0.1")  # Container: 0.0.0.0 für nginx
 
 
+def _post_expiry_days():
+    """Age (days) after which globe markers visually fade out (0 = disabled).
+
+    Purely visual — sources stay in the DB. Injected into the page so the client
+    can compute per-marker age-decay. Bad values fall back to the default.
+    """
+    try:
+        return max(0, int(os.getenv("PFLEGE_POST_EXPIRY_DAYS", "21")))
+    except (TypeError, ValueError):
+        return 21
+
+
+def _render_index():
+    """INDEX_HTML with the server-side config injected (post-expiry for age-decay)."""
+    cfg = f"<script>window.POST_EXPIRY_DAYS={_post_expiry_days()};</script>"
+    return INDEX_HTML.replace("<!--CONFIG-->", cfg, 1)
+
+
 def _db():
     conn = db.connect(DB_PATH)
     db.bootstrap(conn)
@@ -128,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/":
-            body = INDEX_HTML.encode("utf-8")
+            body = _render_index().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")  # iframe immer frisch
@@ -625,6 +643,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 </div>
 
 <div id=globetip></div>
+<!--CONFIG-->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
@@ -755,6 +774,16 @@ function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.s
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
 let HTDATA=null, GLOBE=null, ARCS_ON=true, LANG_ON=true, LANGGEO=null;
+// Age-decay: marker brightness fades linearly with age, gone after EXPIRY days (0 = off).
+// Server-injected via window.POST_EXPIRY_DAYS. Sources stay in the DB — this is purely visual.
+const POST_EXPIRY_DAYS=(typeof window.POST_EXPIRY_DAYS==='number')?window.POST_EXPIRY_DAYS:21;
+function ageDecay(published){
+  if(POST_EXPIRY_DAYS<=0)return 1;                       // disabled → no fade
+  const t=Date.parse(published);
+  if(isNaN(t))return 1;                                  // missing/invalid → treat as fresh
+  const ageDays=(Date.now()-t)/86400000;
+  return Math.max(0,1-ageDays/POST_EXPIRY_DAYS);
+}
 
 // ── Point-in-Polygon (ray-casting, lon/lat, handles Polygon+MultiPolygon+holes) ──
 function pipRing(lon,lat,ring){
@@ -901,48 +930,85 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const group=new THREE.Group();scene.add(group);
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
   const pgeo=new THREE.SphereGeometry(1,8,8);
-  points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
+  let _expired=0;
+  points.forEach(p=>{const decay=ageDecay(p.published);
+    if(decay<=0){_expired++;return;}                     // older than EXPIRY → disappears (visual only)
+    const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
     const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w);  // Trend-Gewicht → Größe (konstant)
     // Quellen sind RUHIG: Helligkeit fix aus Gewicht, kein Sweep. Aufblinken passiert nur auf den Arcs.
-    const bright=0.55+0.45*w;
+    // Alter dämpft die ruhige Helligkeit (kein Puls) → frische Posts leuchten, alte verblassen.
+    const bright=(0.55+0.45*w)*decay;
     const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col.clone().multiplyScalar(bright)}));
     m.position.copy(pos);m.scale.setScalar(base);
     m.userData={url:p.url,base,weight:w,term:p.term,lat:p.lat,lon:p.lon};group.add(m);
-    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.16+0.12*w,blending:THREE.AdditiveBlending,depthWrite:false}));
+    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:(0.16+0.12*w)*decay,blending:THREE.AdditiveBlending,depthWrite:false}));
     halo.position.copy(pos);halo.scale.setScalar(base*2.7);halo.userData={host:m};group.add(halo);});
+  if(_expired)console.info(`Globe: ${_expired} Marker älter als ${POST_EXPIRY_DAYS}d ausgeblendet (DB unverändert).`);
   // ── Ko-Vorkommen-Arcs: Centroid je Hashtag-Term (Mittel der Einheitsvektoren → Antimeridian-sicher) ──
   const arcGroup=new THREE.Group();scene.add(arcGroup);
   const ARCS=[];                                   // {curve,glow,tube,tubeMat,speed,phase,glowBase}
+  // Shared arc geometry: lifted QuadraticBezier tube + travelling glow. nn∈0..1 = relative
+  // strength (drives thickness/speed/glow). `kind` differentiates concept vs cluster arcs.
+  function buildArc(A,B,col,nn,kind,i){
+    const mid=A.clone().add(B).multiplyScalar(0.5);const lift=mid.length()>1e-6?1.25+0.25*Math.min(1,A.distanceTo(B)/1.6):1.35;
+    const ctrl=mid.clone().normalize().multiplyScalar(lift);
+    const curve=new THREE.QuadraticBezierCurve3(A.clone(),ctrl,B.clone());
+    // cluster (co-occurrence) arcs sit a touch thicker + brighter so they read as the denser net,
+    // without inventing a new hue that would clash with the language overlay.
+    const isCluster=kind==='cluster';
+    const tint=isCluster?col.clone().lerp(new THREE.Color(0xffffff),0.18):col;
+    const radius=(isCluster?0.0021:0.0016)+0.0022*nn;
+    const opBase=(isCluster?0.24:0.18)+0.22*nn;
+    const tubeMat=new THREE.MeshBasicMaterial({color:tint,transparent:true,opacity:opBase,blending:THREE.AdditiveBlending,depthWrite:false});
+    const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,40,radius,6,false),tubeMat);arcGroup.add(tube);
+    const glowMat=new THREE.MeshBasicMaterial({color:tint.clone().lerp(new THREE.Color(0xffffff),0.45),transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false});
+    const glowBase=(isCluster?0.010:0.008)+0.012*nn;
+    const glow=new THREE.Mesh(new THREE.SphereGeometry(1,10,10),glowMat);glow.scale.setScalar(glowBase);arcGroup.add(glow);
+    ARCS.push({curve,glow,glowMat,tube,tubeMat,speed:0.22+0.5*nn,phase:i*0.37,glowBase,opBase});
+  }
   (function buildArcs(){
-    const acc={};points.forEach(p=>{const v=ll2v(p.lat,p.lon,1);const a=acc[p.term]||(acc[p.term]=new THREE.Vector3());a.add(v);});
-    const cen={};for(const term in acc){const v=acc[term];if(v.lengthSq()>1e-6)cen[term]=v.clone().normalize().multiplyScalar(1.012);}
-    let pairs=(HTDATA&&HTDATA.trends)||[];
-    const CAP=120;const total=pairs.length;
-    pairs=pairs.slice().sort((x,y)=>(y.n||0)-(x.n||0));
-    if(pairs.length>CAP){console.info(`Globe: ${pairs.length} Ko-Vorkommen-Paare, zeige nur Top ${CAP} (nach n).`);pairs=pairs.slice(0,CAP);}
-    const drawable=pairs.filter(pr=>cen[pr.a]&&cen[pr.b]);
-    const maxN=Math.max(1,...drawable.map(pr=>pr.n||1));
-    drawable.forEach((pr,i)=>{
-      const A=cen[pr.a],B=cen[pr.b];
-      const mid=A.clone().add(B).multiplyScalar(0.5);const lift=mid.length()>1e-6?1.25+0.25*Math.min(1,A.distanceTo(B)/1.6):1.35;
-      const ctrl=mid.clone().normalize().multiplyScalar(lift);
-      const curve=new THREE.QuadraticBezierCurve3(A.clone(),ctrl,B.clone());
-      const col=new THREE.Color(pr.ca||'#5b8def').lerp(new THREE.Color(pr.cb||'#5b8def'),0.5);
-      const nn=(pr.n||1)/maxN;                     // 0..1 relative Ko-Vorkommen-Stärke
-      const tubeMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.18+0.22*nn,blending:THREE.AdditiveBlending,depthWrite:false});
-      const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,40,0.0016+0.0022*nn,6,false),tubeMat);arcGroup.add(tube);
-      const glowMat=new THREE.MeshBasicMaterial({color:col.clone().lerp(new THREE.Color(0xffffff),0.45),transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false});
-      const glow=new THREE.Mesh(new THREE.SphereGeometry(1,10,10),glowMat);glow.scale.setScalar(0.008+0.012*nn);arcGroup.add(glow);
-      ARCS.push({curve,glow,glowMat,tube,tubeMat,speed:0.22+0.5*nn,phase:i*0.37,glowBase:0.008+0.012*nn,opBase:0.18+0.22*nn});
-    });
+    const _note=$('arcnote');
+    const conns=(HTDATA&&HTDATA.connections)||[];
+    if(conns.length){
+      // ── Real cross-language/cross-region net: explicit endpoints from the backend ──
+      const CAP=200;const total=conns.length;
+      let list=conns.slice().sort((x,y)=>(y.n||0)-(x.n||0));
+      const localCap=list.length>CAP;
+      if(localCap){console.info(`Globe: ${list.length} Verbindungen, zeige nur Top ${CAP} (nach n).`);list=list.slice(0,CAP);}
+      const maxN=Math.max(1,...list.map(c=>c.n||1));
+      list.forEach((c,i)=>{
+        const A=ll2v(c.a_lat,c.a_lon,1.012),B=ll2v(c.b_lat,c.b_lon,1.012);
+        buildArc(A,B,new THREE.Color(c.color||'#5b8def'),(c.n||1)/maxN,c.kind,i);
+      });
+      const truncated=(HTDATA&&HTDATA.connections_truncated)||0;
+      if(_note){
+        if(truncated&&localCap)_note.textContent=`${list.length} von ${total}+${truncated} Verbindungen (lokales Cap ${CAP}; Server droppte ${truncated} weitere).`;
+        else if(truncated)_note.textContent=`${list.length} Verbindungen — Server droppte ${truncated} über Cap.`;
+        else if(localCap)_note.textContent=`Top ${CAP} von ${total} Verbindungen dargestellt (nach Häufigkeit).`;
+        else _note.textContent=`${list.length} Verbindungen (Konzept + Cluster über Regionen).`;}
+    }else{
+      // ── Fallback: thin data → centroid-per-term arcs from trends pairs (legacy v2 behavior) ──
+      const acc={};points.forEach(p=>{const v=ll2v(p.lat,p.lon,1);const a=acc[p.term]||(acc[p.term]=new THREE.Vector3());a.add(v);});
+      const cen={};for(const term in acc){const v=acc[term];if(v.lengthSq()>1e-6)cen[term]=v.clone().normalize().multiplyScalar(1.012);}
+      let pairs=(HTDATA&&HTDATA.trends)||[];
+      const CAP=120;const total=pairs.length;
+      pairs=pairs.slice().sort((x,y)=>(y.n||0)-(x.n||0));
+      if(pairs.length>CAP){console.info(`Globe: ${pairs.length} Ko-Vorkommen-Paare, zeige nur Top ${CAP} (nach n).`);pairs=pairs.slice(0,CAP);}
+      const drawable=pairs.filter(pr=>cen[pr.a]&&cen[pr.b]);
+      const maxN=Math.max(1,...drawable.map(pr=>pr.n||1));
+      drawable.forEach((pr,i)=>{
+        const col=new THREE.Color(pr.ca||'#5b8def').lerp(new THREE.Color(pr.cb||'#5b8def'),0.5);
+        buildArc(cen[pr.a],cen[pr.b],col,(pr.n||1)/maxN,'concept',i);
+      });
+      if(_note){
+        const capApplied=pairs.length<total;const geoMissing=drawable.length<pairs.length;
+        if(capApplied&&geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (Top ${CAP} nach Häufigkeit, davon ${pairs.length-drawable.length} ohne auflösbaren Geo-Centroid).`;
+        else if(capApplied)_note.textContent=`Top ${CAP} von ${total} Paaren dargestellt (nach Häufigkeit).`;
+        else if(geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (${total-drawable.length} ohne auflösbaren Geo-Centroid).`;
+        else _note.textContent='';}
+    }
     arcGroup.visible=ARCS_ON;
-    const _note=$('arcnote');if(_note){
-      const capApplied=pairs.length<total;const geoMissing=drawable.length<pairs.length;
-      if(capApplied&&geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (Top ${CAP} nach Häufigkeit, davon ${pairs.length-drawable.length} ohne auflösbaren Geo-Centroid).`;
-      else if(capApplied)_note.textContent=`Top ${CAP} von ${total} Paaren dargestellt (nach Häufigkeit).`;
-      else if(geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (${total-drawable.length} ohne auflösbaren Geo-Centroid).`;
-      else _note.textContent='';}
   })();
   const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
   renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();

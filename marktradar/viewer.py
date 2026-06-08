@@ -19,6 +19,7 @@ from marktradar import db, query
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
+HOST = os.getenv("PFLEGE_VIEWER_HOST", "127.0.0.1")  # Container: 0.0.0.0 für nginx
 
 
 def _db():
@@ -301,7 +302,7 @@ function renderGraph(g){
 }
 async function selEntity(name){
   curEntity=name;
-  const e=await j('/api/entity?name='+encodeURIComponent(name));
+  const e=await j('api/entity?name='+encodeURIComponent(name));
   if(!e||!e.name){$('gdetail').innerHTML='<span class=muted>keine Daten</span>';return;}
   $('gdetail').innerHTML=`<div class=en>${esc(e.name)}</div><div class=et>${esc(e.type)} · ${e.article_count} Meldungen</div>`+
     (e.recent||[]).map(a=>`<div class=tlitem><span class=d style="background:${evc(a.event_type)}"></span><div><div>${esc((a.title||'').slice(0,54))}</div><div class=muted>${esc((a.published||'').slice(0,10))} · ${esc(a.event_type||'—')}</div></div></div>`).join('');
@@ -330,7 +331,7 @@ async function renderTimeline(){
   loadTimeline();
 }
 async function loadTimeline(){
-  let items=await j('/api/feed?limit=120');
+  let items=await j('api/feed?limit=120');
   if(curEvent) items=items.filter(a=>a.event_type===curEvent);
   renderTimeAxis($('tltax'), items, a=>evc(a.event_type), a=>(a.source_domain||'').replace('www.','').slice(0,22));
 }
@@ -358,18 +359,18 @@ function renderValenceChart(el, items){
 }
 let DTOPICS=[],dtIdx=0;
 async function loadDiscourseTopic(){
-  if(!DTOPICS.length){DTOPICS=await j('/api/discourse_topics');}
+  if(!DTOPICS.length){DTOPICS=await j('api/discourse_topics');}
   if(!DTOPICS.length){$('dtchart').className='muted';$('dtchart').textContent='Positionen werden synthetisiert…';return;}
   dtIdx=((dtIdx%DTOPICS.length)+DTOPICS.length)%DTOPICS.length;
   const topic=DTOPICS[dtIdx];
   $('tname').textContent=topic+'  ('+(dtIdx+1)+'/'+DTOPICS.length+')';
-  const d=await j('/api/discourse_topic?topic='+encodeURIComponent(topic));
+  const d=await j('api/discourse_topic?topic='+encodeURIComponent(topic));
   $('dtnote').textContent=d.note||'';
   $('dtlegend').innerHTML=(d.legend||[]).map(p=>`<span class=lg><span class=sw style="background:${p.color}"></span>${esc(p.label)} <span style="color:${p.valence==='pro'?'#2ecc71':p.valence==='contra'?'#ff6b6b':'#7a8290'}">(${esc(p.valence)})</span></span>`).join('')||'<span class=muted>Positionen werden synthetisiert…</span>';
   renderValenceChart($('dtchart'), d.items);
 }
 async function loadRadar(){
-  const d=await j('/api/discourse');
+  const d=await j('api/discourse');
   const tmax=Math.max(1,...d.terms.flatMap(t=>t.trend&&t.trend.length?t.trend:[0]));
   $('radar').innerHTML=d.terms.map(t=>{const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
     return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div><div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div><div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
@@ -383,14 +384,14 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   if(t.dataset.t==='timeline') renderTimeline();
   if(t.dataset.t==='diskurs'){loadDiscourseTopic();loadRadar();}
 });
-$('markseen').onclick=async()=>{await fetch('/api/mark_seen',{method:'POST'});refresh();};
+$('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 
-async function loadGraph(){renderGraph(await j('/api/graph'));}
+async function loadGraph(){renderGraph(await j('api/graph'));}
 async function refresh(){
-  const [o,f]=await Promise.all([j('/api/overview'),j('/api/feed')]);
+  const [o,f]=await Promise.all([j('api/overview'),j('api/feed')]);
   renderOverview(o); renderFeed(f);
 }
-const es=new EventSource('/events');
+const es=new EventSource('events');
 es.onopen=()=>$('conn').textContent='live · verbunden';
 es.onerror=()=>$('conn').textContent='reconnect…';
 es.addEventListener('change',()=>{$('conn').textContent='live · update';refresh();
@@ -401,7 +402,7 @@ setInterval(refresh,30000);
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
     print(f"Pflege-Marktradar Viewer → http://localhost:{PORT}  (DB: {DB_PATH})", flush=True)
     try:

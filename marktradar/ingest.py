@@ -150,3 +150,23 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
     conn.commit()
     return {"new": new_total, "embedded": len(new_ids), "errors": errors,
             "sources": len(srcs)}
+
+
+def backfill_embeddings(conn, limit: int | None = None) -> int:
+    """Embeddet Artikel ohne article_vec-Eintrag (z. B. migrierte Altartikel). Idempotent.
+    Gibt Anzahl neu embeddeter zurück."""
+    q = ("SELECT a.id, a.title, a.summary FROM articles a "
+         "LEFT JOIN article_vec v ON v.article_id = a.id WHERE v.article_id IS NULL")
+    if limit is not None:
+        q += f" LIMIT {int(limit)}"
+    n = 0
+    for r in conn.execute(q).fetchall():
+        text = f"{r['title'] or ''} {r['summary'] or ''}".strip()
+        if not text:
+            continue
+        vec = embeddings.embed(text)
+        conn.execute("INSERT OR REPLACE INTO article_vec(article_id, embedding) VALUES (?,?)",
+                     (r["id"], serialize_float32(vec)))
+        n += 1
+    conn.commit()
+    return n

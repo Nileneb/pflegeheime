@@ -11,10 +11,15 @@ def search_news(conn, query: str, limit: int = 20, since_days: int | None = None
         "SELECT article_id, distance FROM article_vec "
         "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
         (qvec, max(limit * 4, 20))).fetchall()
-    if not knn:
-        return []
-    ids = [r["article_id"] for r in knn]
     dist = {r["article_id"]: r["distance"] for r in knn}
+    # Keyword-Recall: exakte Term-Treffer in title/summary, die der Vektor verfehlt
+    # (Eigennamen wie Träger-/Ortsnamen) ODER Artikel ohne Embedding (migrierte Altdaten).
+    like = f"%{query}%"
+    kw = conn.execute("SELECT id FROM articles WHERE title LIKE ? OR summary LIKE ?",
+                      (like, like)).fetchall()
+    ids = list(dict.fromkeys([r["article_id"] for r in knn] + [r["id"] for r in kw]))
+    if not ids:
+        return []
     placeholders = ",".join("?" * len(ids))
     sql = (f"SELECT id,title,summary,link,published,kategorie,grund,source_domain,relevant "
            f"FROM articles WHERE id IN ({placeholders})")

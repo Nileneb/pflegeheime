@@ -28,3 +28,27 @@ def test_search_news_respects_only_relevant(conn, monkeypatch):
     monkeypatch.setattr(query.embeddings, "embed", lambda t: [0.9] * 1024)
     hits = query.search_news(conn, "Korian", limit=5, only_relevant=True)
     assert all(h["title"] != "Korian Insolvenz Gerücht" for h in hits)
+
+
+def test_search_news_finds_unembedded_article_via_keyword(conn, monkeypatch):
+    # Migrierte Altartikel haben keinen article_vec-Eintrag → reine Vektorsuche würde
+    # sie NIE finden. Keyword-Hybrid muss sie über title/summary trotzdem liefern.
+    conn.execute("INSERT INTO sources(name,type,url) VALUES('s','rss','http://x')")
+    conn.execute("INSERT INTO articles(source_id,guid,title,relevant) "
+                 "VALUES (1,'g9','Korian Pleite Hamburg',1)")
+    conn.commit()
+    monkeypatch.setattr(query.embeddings, "embed", lambda t: [0.5] * 1024)
+    hits = query.search_news(conn, "Korian", limit=5)
+    assert any("Korian" in h["title"] for h in hits)
+
+
+def test_backfill_embeddings_covers_unembedded(conn, monkeypatch):
+    from marktradar import ingest
+    conn.execute("INSERT INTO sources(name,type,url) VALUES('s','rss','http://x')")
+    conn.execute("INSERT INTO articles(source_id,guid,title) VALUES (1,'a','Titel ohne Vektor')")
+    conn.commit()
+    monkeypatch.setattr(ingest.embeddings, "embed", lambda t: [0.2] * 1024)
+    n = ingest.backfill_embeddings(conn)
+    assert n == 1
+    assert conn.execute("SELECT count(*) c FROM article_vec").fetchone()["c"] == 1
+    assert ingest.backfill_embeddings(conn) == 0  # idempotent

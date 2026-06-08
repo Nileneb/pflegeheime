@@ -1060,13 +1060,17 @@ async function refresh(){
   const [o,f]=await Promise.all([j('api/overview'),j('api/feed')]);
   renderOverview(o); renderFeed(f);
 }
-const es=new EventSource('events');
-es.onopen=()=>$('conn').textContent='live · verbunden';
-es.onerror=()=>$('conn').textContent='reconnect…';
-es.addEventListener('change',()=>{$('conn').textContent='live · update';refresh();
-  if(!$('graph').classList.contains('hide'))loadGraph();});
+// ?static unterdrückt den Live-Stream (Print/Embed/Headless-Snapshot ohne offene SSE).
+const STATIC=location.search.indexOf('static')>=0;
+if(!STATIC){
+  const es=new EventSource('events');
+  es.onopen=()=>$('conn').textContent='live · verbunden';
+  es.onerror=()=>$('conn').textContent='reconnect…';
+  es.addEventListener('change',()=>{$('conn').textContent='live · update';refresh();
+    if(!$('graph').classList.contains('hide'))loadGraph();});
+}else{$('conn').textContent='static';}
 refresh();
-setInterval(refresh,30000);
+if(!STATIC) setInterval(refresh,30000);
 </script></body></html>"""
 
 

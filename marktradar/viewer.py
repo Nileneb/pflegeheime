@@ -11,11 +11,37 @@ Watermark (meta.last_seen) markiert neue Meldungen.
 import json
 import os
 import time
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from marktradar import db, geo, hashtags, mapillary, organigram, query
+
+
+def _reskin(body):
+    """Leitet Multi-View-Bilder an den Meshy-Service (app.linn.games) weiter. Der
+    Service erstellt den Task + bekommt den Webhook; per callback_url meldet er uns das
+    fertige GLB zurück (→ org_units.meshy_url)."""
+    url = os.getenv("MESHY_GEN_URL", "http://php-fpm/api/meshy/generate")
+    tok = os.getenv("MCP_SERVICE_TOKEN", "")
+    if not tok:
+        return {"error": "MCP_SERVICE_TOKEN nicht gesetzt (in .env.mayring)"}
+    imgs = body.get("images") or []
+    if not imgs:
+        return {"error": "keine Bilder"}
+    payload = {"images": imgs[:4], "prompt": body.get("prompt", ""),
+               "meta": {"unit_id": body.get("unit_id"), "name": body.get("name"),
+                        "callback_url": os.getenv("PFLEGE_RESKIN_CALLBACK",
+                                                  "http://pflege-viewer:8765/api/org/meshy_done")}}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={"Authorization": f"Bearer {tok}",
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
@@ -144,6 +170,16 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._body()
                 _json(self, geo.geocode_units(conn, b.get("traeger", "Bergische Diakonie"),
                                               b.get("limit")))
+            elif path == "/api/org/reskin":
+                _json(self, _reskin(self._body()))
+            elif path == "/api/org/meshy_done":
+                b = self._body()
+                uid = (b.get("meta") or {}).get("unit_id") or b.get("unit_id")
+                if uid and b.get("model_url"):
+                    conn.execute("UPDATE org_units SET meshy_url=? WHERE id=?",
+                                 (b["model_url"], int(uid)))
+                    conn.commit()
+                _json(self, {"ok": True})
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
@@ -309,6 +345,13 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .scload{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:var(--mut);font-size:12px;z-index:4}
 .schide{display:none}
 #org3dtip{position:fixed;display:none;z-index:600;background:#0f1622ee;border:1px solid var(--ln);border-radius:6px;padding:5px 9px;font-size:11px;color:#fff;pointer-events:none;max-width:240px}
+#reskinov{position:absolute;inset:0;background:#05080fe8;z-index:7;display:flex;align-items:center;justify-content:center}
+.rkbox{background:var(--pan);border:1px solid var(--ln);border-radius:10px;padding:18px;width:min(740px,92vw)}
+.rkhd{display:flex;flex-direction:column;gap:3px;margin-bottom:12px}.rkhd b{color:#fff;font-size:14px}
+.rkthumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.rkthumbs img{width:100%;border-radius:6px;border:1px solid var(--ln);display:block}
+.rkrow{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+#rkstatus{margin-top:8px}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -410,11 +453,25 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
       <span class=scbtn data-st=toon onclick="setSceneStyle('toon')">3 · Toon</span>
       <span class=scbtn data-st=blueprint onclick="setSceneStyle('blueprint')">4 · Blueprint</span>
     </div>
-    <span class=schint>WASD bewegen · Maus schauen · Shift rennen · ESC raus</span>
+    <span class=schint>WASD · Maus · Shift rennen · ESC raus</span>
+    <button class=btn id=screskin>📸 Reskin</button>
     <button class=btn id=scexit>✕ schließen</button>
   </div>
   <div id=sclock class=sclock>▶ Klick zum Loslaufen</div>
   <div id=scload class=scload>lädt OSM-Gebäude…</div>
+  <div id=reskinov class=hide>
+    <div class=rkbox>
+      <div class=rkhd><b>Reskin · Multi-View des Gebäudes</b><span class=muted>4 Ansichten unseres OSM-Modells → Meshy (mit Prompt). Erst Qualität prüfen.</span></div>
+      <div id=rkthumbs class=rkthumbs></div>
+      <input id=rkprompt class=htin value="detailed futuristic sci-fi cargo-plane pilot school building, weathered metal, neon">
+      <div class=rkrow>
+        <button class=btn id=rkcancel>abbrechen</button>
+        <button class=btn id=rkrecap>↻ neu rendern</button>
+        <button class=btn id=rksend>→ an Meshy senden</button>
+      </div>
+      <div id=rkstatus class=muted></div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -530,7 +587,7 @@ async function loadDiscourseTopic(){
   renderValenceChart($('dtchart'), d.items);
 }
 // ── three.js Helfer (Globus + Org-3D teilen sich Renderer-Erzeugung) ──
-function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antialias:true,alpha:true});
+function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
   r.setPixelRatio(Math.min(2,devicePixelRatio));r.setSize(el.clientWidth,el.clientHeight||600);el.appendChild(r.domElement);return r;}
 function ll2v(lat,lon,r){const phi=(90-lat)*Math.PI/180,th=(lon+180)*Math.PI/180;
   return new THREE.Vector3(-r*Math.sin(phi)*Math.cos(th),r*Math.cos(phi),r*Math.sin(phi)*Math.sin(th));}
@@ -692,15 +749,17 @@ function renderOrg3D(root){disposeScene(ORG3D);const el=$('org3d');const rendere
 // ── 3D-OSM-BURNER: begehbare Welt der Einrichtung (Overpass-Gebäude, WASD, Stile) ──
 let SCENE=null;
 function projXY(lat,lon,lat0,lon0){return [(lon-lon0)*111320*Math.cos(lat0*Math.PI/180), -(lat-lat0)*110540];}
-async function openScene3d(unit){const ov=$('scene3d');ov.classList.remove('hide');
+async function openScene3d(unit,autoReskin){const ov=$('scene3d');ov.classList.remove('hide');
   $('scname').textContent=unit.name||'Einrichtung';$('scsub').textContent='lädt OSM-Gebäude…';
   $('scload').classList.remove('schide');$('scload').textContent='lädt OSM-Gebäude…';
   let d;try{d=await j('api/org/scene?id='+unit.id);}catch(e){d={error:String(e)};}
   if(!d||d.error){$('scsub').textContent='Fehler: '+((d&&d.error)||'?')+((d&&(d.error||'').includes('geocoded'))?' — erst Geocoding laufen lassen':'');
     $('scload').textContent=(d&&d.error)||'Fehler';return;}
   if(d.name)$('scname').textContent=d.name;
+  d.unit_id=unit.id;
   $('scsub').textContent=d.buildings.length+' Gebäude · '+(d.address||(d.center.lat.toFixed(4)+', '+d.center.lon.toFixed(4)));
-  $('scload').classList.add('schide');buildScene(d);}
+  $('scload').classList.add('schide');buildScene(d);
+  if(autoReskin)setTimeout(openReskin,1500);}
 function disposeSceneR(){if(SCENE){cancelAnimationFrame(SCENE.raf);document.removeEventListener('keydown',SCENE.kd);document.removeEventListener('keyup',SCENE.ku);
   if(SCENE.controls&&SCENE.controls.isLocked)SCENE.controls.unlock();
   if(SCENE.renderer){SCENE.renderer.dispose();const d=SCENE.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}SCENE=null;}}
@@ -736,7 +795,12 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
   el.onclick=()=>controls.lock();
   controls.addEventListener('lock',()=>$('sclock').classList.add('schide'));
   controls.addEventListener('unlock',()=>{if(SCENE)$('sclock').classList.remove('schide');});
-  const clock=new THREE.Clock();const H={renderer,controls,kd,ku,applyStyle};
+  // Fokus-Gebäude: benanntes Match, sonst das der Einrichtungs-Koordinate (Zentrum) nächste.
+  let focal=mats.find(m=>m.userData.focal);
+  if(!focal&&mats.length){focal=mats.reduce((best,m)=>{const c=new THREE.Box3().setFromObject(m).getCenter(new THREE.Vector3());
+    const dd=c.x*c.x+c.z*c.z;return dd<best.d?{m,d:dd}:best;},{m:mats[0],d:1e18}).m;}
+  if(focal)focal.userData.focal=true;
+  const clock=new THREE.Clock();const H={renderer,controls,kd,ku,applyStyle,scene,ground,buildings:mats,focal,unit:d.unit_id||null,name:d.name};
   applyStyle('real');$('sclock').classList.remove('schide');
   (function loop(){H.raf=requestAnimationFrame(loop);const dt=Math.min(0.05,clock.getDelta());
     if(controls.isLocked){const sp=(keys['ShiftLeft']||keys['ShiftRight']?30:12)*dt;const o=controls.getObject();
@@ -745,12 +809,47 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
       if(keys['Space'])o.position.y+=sp;if(keys['KeyC'])o.position.y=Math.max(1.7,o.position.y-sp);}
     renderer.render(scene,camera);})();
   SCENE=H;}
+// ── Multi-View-Capture des Fokus-Gebäudes (im Browser, legal/token-frei) → Meshy ──
+function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
+  const foc=H.focal,box=new THREE.Box3().setFromObject(foc),c=box.getCenter(new THREE.Vector3()),sz=box.getSize(new THREE.Vector3());
+  const r=Math.max(sz.x,sz.z)*1.7+sz.y*0.8+8;
+  const hidden=[];H.scene.traverse(o=>{if(o.isMesh&&o!==foc){hidden.push([o,o.visible]);o.visible=false;}});
+  const oBg=H.scene.background,oFog=H.scene.fog,oW=H.renderer.domElement.width,oH=H.renderer.domElement.height,oMat=foc.material;
+  H.scene.background=new THREE.Color(0xdde3ec);H.scene.fog=null;
+  foc.material=new THREE.MeshStandardMaterial({color:0x97a1b0,roughness:0.85,metalness:0.04});
+  // Eigenes, gedämpftes Licht nur für den Capture → klare Flächen-Schattierung (Form für Meshy).
+  const capLights=new THREE.Group();
+  capLights.add(new THREE.AmbientLight(0xffffff,0.38));
+  const dl=new THREE.DirectionalLight(0xffffff,0.62);dl.position.set(1,1.8,1.2);capLights.add(dl);
+  const dl2=new THREE.DirectionalLight(0xc4d4ee,0.22);dl2.position.set(-1.3,0.8,-1);capLights.add(dl2);
+  H.scene.add(capLights);
+  const cam=new THREE.PerspectiveCamera(42,1,0.1,9000);H.renderer.setSize(size,size,false);
+  const imgs=[];[30,120,210,300].forEach(a=>{const rad=a*Math.PI/180;
+    cam.position.set(c.x+r*Math.cos(rad),c.y+sz.y*0.55+r*0.3,c.z+r*Math.sin(rad));cam.lookAt(c.x,c.y+sz.y*0.35,c.z);
+    H.renderer.render(H.scene,cam);imgs.push(H.renderer.domElement.toDataURL('image/jpeg',0.92));});
+  H.scene.remove(capLights);
+  foc.material=oMat;H.scene.background=oBg;H.scene.fog=oFog;hidden.forEach(([o,v])=>o.visible=v);H.renderer.setSize(oW,oH,false);
+  return imgs;}
+let RKIMGS=[];
+function openReskin(){if(!SCENE||!SCENE.focal){console.warn('kein Fokus-Gebäude');return;}if(SCENE.controls.isLocked)SCENE.controls.unlock();
+  try{RKIMGS=captureMultiview();}catch(e){RKIMGS=[];console.error('capture',e);}
+  $('rkthumbs').innerHTML=RKIMGS.map(u=>`<img src="${u}">`).join('')||'<span class=muted>kein Fokus-Gebäude an dieser Adresse — anderes Haus probieren</span>';
+  $('rkstatus').textContent=RKIMGS.length?(RKIMGS.length+' Ansichten gerendert — Qualität prüfen, dann senden'):'';
+  $('reskinov').classList.remove('hide');}
+async function sendReskin(){if(!RKIMGS.length)return;const st=$('rkstatus');st.textContent='sende '+RKIMGS.length+' Ansichten an Meshy…';$('rksend').disabled=true;
+  try{const r=await (await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:RKIMGS})).json();
+    st.innerHTML=r.error?('Fehler: '+esc(r.error)):('✓ Meshy-Task <b>'+esc(r.task_id||r.job_id||'?')+'</b> gestartet — GLB kommt per Webhook in MinIO/Volume.');
+  }catch(e){st.textContent='Fehler: '+e;}finally{$('rksend').disabled=false;}}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 $('htrefresh').onclick=refreshHt;
 $('htaddbtn').onclick=addHt;
 $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
 $('scexit').onclick=closeScene;
+$('screskin').onclick=openReskin;
+$('rkcancel').onclick=()=>$('reskinov').classList.add('hide');
+$('rkrecap').onclick=openReskin;
+$('rksend').onclick=sendReskin;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&SCENE&&!SCENE.controls.isLocked)closeScene();});
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
@@ -765,7 +864,7 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);
 });
 (function(){const h=(location.hash||'').replace('#','');
-  if(h.indexOf('scene=')===0){openScene3d({id:+h.split('=')[1]});return;}
+  if(h.indexOf('scene=')===0){openScene3d({id:parseInt(h.split('=')[1])},h.indexOf('reskin')>=0);return;}
   if(h==='org3d'){document.querySelector('.tab[data-t=org]').click();setOrgMode('d3');return;}
   const t=h&&document.querySelector('.tab[data-t='+h+']');if(t)t.click();})();
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};

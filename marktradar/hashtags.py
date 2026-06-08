@@ -516,7 +516,7 @@ def _centroid(latlons):
         y += cl * math.sin(rlon)
         z += math.sin(rlat)
     x /= n; y /= n; z /= n
-    if x == 0.0 and y == 0.0 and z == 0.0:  # antipodal cancel-out → fall back to plain mean
+    if math.hypot(x, y, z) < 1e-9:  # WHY: near-antipodal points leave float residuals ~4e-17, == 0.0 never triggers
         return (sum(p[0] for p in latlons) / n, sum(p[1] for p in latlons) / n)
     lon = math.degrees(math.atan2(y, x))
     lat = math.degrees(math.atan2(z, math.hypot(x, y)))
@@ -532,7 +532,7 @@ def _blend_colors(hexes):
     for h in valid:
         for i in range(3):
             rgb[i] += int(h[1 + 2 * i:3 + 2 * i], 16)
-    rgb = [c // len(valid) for c in rgb]
+    rgb = [round(c / len(valid)) for c in rgb]
     return "#%02x%02x%02x" % tuple(rgb)
 
 
@@ -555,7 +555,7 @@ def _regions_for(conn, hashtag_ids):
     return {k: {"centroid": _centroid(v), "n": len(v)} for k, v in buckets.items()}
 
 
-def connections(conn, cap=CONNECTIONS_CAP):
+def connections(conn, cap=CONNECTIONS_CAP, trends_result=None):
     """Explicit-endpoint arcs for the globe net.
 
     kind="concept": one hashtag present in ≥2 regions → hub-and-spoke from its densest
@@ -564,6 +564,9 @@ def connections(conn, cap=CONNECTIONS_CAP):
     kind="cluster": a set of co-occurring hashtags (strong `trends` pairs as 2-clusters)
     present in ≥2 regions → arcs from the cluster's densest region to the others.
     color = blend of the cluster members' colors.
+
+    trends_result: optional precomputed result of trends(conn). When provided, the
+    internal trends() call is skipped (avoids a redundant ~200-300ms scan in map_data).
 
     Returns {"arcs": [...], "truncated": <dropped>}. Arcs are capped (sorted by n desc).
     Empty/small output is honest: if data lives in one region there is simply no net.
@@ -578,7 +581,7 @@ def connections(conn, cap=CONNECTIONS_CAP):
         if len(regions) < 2:
             continue  # same concept must appear in ≥2 places to be a cross-region arc
         items = sorted(regions.items(), key=lambda kv: -kv[1]["n"])[:_MAX_REGIONS_PER]
-        hub_key, hub = items[0]
+        _, hub = items[0]
         for _key, reg in items[1:]:
             arcs.append({
                 "a_lat": hub["centroid"][0], "a_lon": hub["centroid"][1],
@@ -590,7 +593,7 @@ def connections(conn, cap=CONNECTIONS_CAP):
     # WHY: simplest defensible cluster def — each strong co-occurrence `pair` from trends()
     # is a 2-hashtag cluster. Avoids fragile component-merging when the co-occurrence
     # signal is sparse (only German articles feed it today).
-    tr = trends(conn)
+    tr = trends_result if trends_result is not None else trends(conn)
     term_to_id = {t["term"]: tid for tid, t in tags.items()}
     seen_clusters = set()
     pair_signals = sorted(tr["pairs"], key=lambda p: -p["n"])
@@ -609,7 +612,7 @@ def connections(conn, cap=CONNECTIONS_CAP):
             continue  # the cluster must be co-present in ≥2 regions to span the globe
         tint = _blend_colors([tags[a_id]["color"], tags[b_id]["color"]])
         items = sorted(regions.items(), key=lambda kv: -kv[1]["n"])[:_MAX_REGIONS_PER]
-        hub_key, hub = items[0]
+        _, hub = items[0]
         for _key, reg in items[1:]:
             arcs.append({
                 "a_lat": hub["centroid"][0], "a_lon": hub["centroid"][1],
@@ -795,7 +798,7 @@ def map_data(conn, max_points=600):
             if canonical:
                 translations.setdefault(canonical, {})[r["lang_code"]] = r["term"]
 
-    conns = connections(conn)
+    conns = connections(conn, trends_result=tr)
     return {
         "legend": legend,
         "points": points,

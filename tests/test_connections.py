@@ -1,4 +1,5 @@
 """Tests for v2.1-T2 cross-language connection net (hashtags.connections)."""
+import pytest
 from marktradar import hashtags
 
 
@@ -161,3 +162,53 @@ def test_map_data_includes_connections_and_prior_keys(conn, monkeypatch):
                 "languages", "total_posts", "connections", "connections_truncated"):
         assert key in data, f"map_data missing key {key!r}"
     assert any(a["kind"] == "concept" for a in data["connections"])
+
+
+# ── Geo-bucket fallback region ────────────────────────────────────────────────
+
+def test_geo_bucket_fallback_emits_concept_arc(conn, monkeypatch):
+    """Posts with NULL country AND NULL lang_code fall through to the 10°-geo-bucket.
+    Two distinct buckets for the same hashtag → a concept arc must be emitted."""
+    monkeypatch.setattr(hashtags, "trends", lambda c: {"pairs": []})
+    hid = _add_hashtag(conn, "Geopflegung", "#aabbcc")
+    # bucket g:5,1  (lat=51, lon=10 → int(51//10)=5, int(10//10)=1)
+    conn.execute(
+        "INSERT INTO hashtag_posts(hashtag_id,source,url,lat,lon,country,lang_code,published) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (hid, "news", "geo1", 51.0, 10.0, None, None, "2026-01-01"),
+    )
+    conn.execute(
+        "INSERT INTO hashtag_posts(hashtag_id,source,url,lat,lon,country,lang_code,published) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (hid, "news", "geo2", 53.0, 12.0, None, None, "2026-01-01"),
+    )
+    # bucket g:3,-8  (lat=35, lon=-74 → int(35//10)=3, int(-74//10)=-8)
+    conn.execute(
+        "INSERT INTO hashtag_posts(hashtag_id,source,url,lat,lon,country,lang_code,published) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (hid, "news", "geo3", 35.0, -74.0, None, None, "2026-01-01"),
+    )
+    conn.commit()
+
+    res = hashtags.connections(conn)
+    concept = [a for a in res["arcs"] if a["kind"] == "concept"]
+    assert len(concept) == 1, f"expected 1 concept arc via geo-bucket, got {concept}"
+
+
+# ── trends_result bypasses internal trends() call ─────────────────────────────
+
+def test_connections_skips_trends_when_precomputed(conn, monkeypatch):
+    """connections(conn, trends_result=tr) must not call trends() internally."""
+    call_count = {"n": 0}
+
+    def _spy_trends(c):
+        call_count["n"] += 1
+        raise AssertionError("trends() called internally despite trends_result being supplied")
+
+    monkeypatch.setattr(hashtags, "trends", _spy_trends)
+
+    precomputed = {"pairs": []}
+    # Should not raise even though monkeypatched trends() would raise.
+    result = hashtags.connections(conn, trends_result=precomputed)
+    assert call_count["n"] == 0
+    assert "arcs" in result

@@ -204,9 +204,12 @@ def delete(conn, hashtag_id):
 
 
 # ── Refresh: je aktivem Hashtag aus allen Quellen holen, geokodieren, upserten ──
-def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20):
+def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=None):
     now = datetime.now(timezone.utc).isoformat()
-    tags = conn.execute("SELECT id,term FROM hashtags WHERE active=1").fetchall()
+    if only_id is not None:
+        tags = conn.execute("SELECT id,term FROM hashtags WHERE id=?", (only_id,)).fetchall()
+    else:
+        tags = conn.execute("SELECT id,term FROM hashtags WHERE active=1").fetchall()
     added, errors, per_source = 0, [], {s: 0 for s in sources}
     for ht in tags:
         for src in sources:

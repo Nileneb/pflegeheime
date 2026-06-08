@@ -123,7 +123,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/hashtags/refresh":
                 b = self._body()
                 src = tuple(b["sources"]) if b.get("sources") else ("mastodon", "bluesky", "news")
-                _json(self, hashtags.refresh(conn, src, int(b.get("limit", 15))))
+                _json(self, hashtags.refresh(conn, src, int(b.get("limit", 15)),
+                                             only_id=b.get("id")))
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
@@ -321,7 +322,6 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
     <div class=lgbar id=dtlegend></div>
     <div id=dtchart class=muted>lädt…</div>
   </div>
-  <div class=panel><div class=ph><span>THEMEN / HASHTAG-RADAR · WER GREIFT WAS AUF</span></div><div id=radar></div></div>
 </section>
 
 <section id=timeline class=hide>
@@ -475,12 +475,6 @@ async function loadDiscourseTopic(){
   $('dtlegend').innerHTML=(d.legend||[]).map(p=>`<span class=lg><span class=sw style="background:${p.color}"></span>${esc(p.label)} <span style="color:${p.valence==='pro'?'#2ecc71':p.valence==='contra'?'#ff6b6b':'#7a8290'}">(${esc(p.valence)})</span></span>`).join('')||'<span class=muted>Positionen werden synthetisiert…</span>';
   renderValenceChart($('dtchart'), d.items);
 }
-async function loadRadar(){
-  const d=await j('api/discourse');
-  const tmax=Math.max(1,...d.terms.flatMap(t=>t.trend&&t.trend.length?t.trend:[0]));
-  $('radar').innerHTML=d.terms.map(t=>{const spark=(t.trend||[]).map(v=>`<span class=sb style="height:${4+20*v/tmax}px"></span>`).join('');
-    return `<div class=tr><div class=trh><span class=tt>#${esc(t.term)}</span><span class=tn>${t.count} Meldungen</span><span class=spark>${spark}</span></div><div class=trm>Quellen: ${(t.sources||[]).map(s=>esc(s[0])+' ('+s[1]+')').join(', ')||'—'}</div><div class=tre>Aufgegriffen von: ${(t.entities||[]).map(esc).join(', ')||'—'}</div></div>`;}).join('');
-}
 // ── three.js Helfer (Globus + Org-3D teilen sich Renderer-Erzeugung) ──
 function makeRenderer(el){el.innerHTML='';const r=new THREE.WebGLRenderer({antialias:true,alpha:true});
   r.setPixelRatio(Math.min(2,devicePixelRatio));r.setSize(el.clientWidth,el.clientHeight||600);el.appendChild(r.domElement);return r;}
@@ -506,20 +500,38 @@ function showHtSources(id,term){$('htsrc_title').textContent='QUELLEN · #'+term
     `<span class=srcbadge style="color:${SRCC[s.source]||'#888'};border-color:${SRCC[s.source]||'#888'}">${esc(s.source)}</span>`+
     `${esc((s.content||'').slice(0,100))}<span class=sm> — ${esc(s.author||'')} · ${esc((s.published||'').slice(0,10))}</span></a>`).join('')
     ||'noch keine Quellen — „↻ Quellen abrufen“ klicken';}
+const POST=(u,o)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o||{})});
 async function addHt(){const term=$('htterm').value.trim();if(!term)return;
-  await fetch('api/hashtag/add',{method:'POST',body:JSON.stringify({term,color:$('htcolor').value})});$('htterm').value='';loadGlobe();}
-async function delHt(id){if(!confirm('Hashtag samt Posts löschen?'))return;
-  await fetch('api/hashtag/delete',{method:'POST',body:JSON.stringify({id})});loadGlobe();}
-async function toggleHt(id,active){await fetch('api/hashtag/update',{method:'POST',body:JSON.stringify({id,active:!!active})});loadGlobe();}
-function pickColor(id,cur){const c=prompt('Farbe (Hex, z.B. #ff4d4d):',cur);if(c)fetch('api/hashtag/update',{method:'POST',body:JSON.stringify({id,color:c})}).then(loadGlobe);}
+  const b=$('htaddbtn');b.textContent='…';b.disabled=true;
+  try{const res=await (await POST('api/hashtag/add',{term,color:$('htcolor').value})).json();
+    $('htterm').value='';
+    if(res&&res.id) await POST('api/hashtags/refresh',{id:res.id,limit:15});  // sofort Quellen für den neuen Tag
+    await loadGlobe();
+    if(res&&res.id) showHtSources(res.id,res.term);
+  }finally{b.textContent='+';b.disabled=false;}}
+async function delHt(id){if(!confirm('Hashtag samt Posts löschen?'))return;await POST('api/hashtag/delete',{id});loadGlobe();}
+async function toggleHt(id,active){await POST('api/hashtag/update',{id,active:!!active});loadGlobe();}
+function pickColor(id,cur){const c=prompt('Farbe (Hex, z.B. #ff4d4d):',cur);if(c)POST('api/hashtag/update',{id,color:c}).then(loadGlobe);}
 async function refreshHt(){const b=$('htrefresh');b.textContent='lädt…';b.disabled=true;
-  try{await fetch('api/hashtags/refresh',{method:'POST',body:JSON.stringify({limit:15})});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
+  try{await POST('api/hashtags/refresh',{limit:15});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
 function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const renderer=makeRenderer(el);
   const scene=new THREE.Scene();
-  const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.1,100);camera.position.set(0,0.6,2.7);
+  const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.1,100);
+  camera.position.copy(ll2v(32,12,2.7));  // Startblick auf Europa/DE (Cluster)
   const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=0.08;
-  controls.enablePan=false;controls.minDistance=1.4;controls.maxDistance=5;controls.autoRotate=true;controls.autoRotateSpeed=0.45;
-  scene.add(new THREE.AmbientLight(0x90b0ff,0.8));const dl=new THREE.DirectionalLight(0xffffff,0.7);dl.position.set(3,2,1);scene.add(dl);
+  controls.enablePan=false;controls.minDistance=1.4;controls.maxDistance=5;controls.autoRotate=false;
+  scene.add(new THREE.AmbientLight(0x6982b8,0.32));  // gedämpft → Tag/Nacht-Kontrast sichtbar
+  // Sonne: Richtung = subsolarer Punkt aus aktueller UTC-Zeit (Berlin-Tageszeit), live nachgeführt.
+  const sun=new THREE.DirectionalLight(0xfff1cc,1.25);scene.add(sun);scene.add(sun.target);
+  const sunMesh=new THREE.Mesh(new THREE.SphereGeometry(0.12,24,24),new THREE.MeshBasicMaterial({color:0xffe27a}));scene.add(sunMesh);
+  const sunGlow=new THREE.Mesh(new THREE.SphereGeometry(0.12,24,24),new THREE.MeshBasicMaterial({color:0xffd24d,transparent:true,opacity:0.35,blending:THREE.AdditiveBlending,depthWrite:false}));sunMesh.add(sunGlow);sunGlow.scale.setScalar(2.4);
+  function subsolar(){const n=new Date();const utcH=n.getUTCHours()+n.getUTCMinutes()/60+n.getUTCSeconds()/3600;
+    const lon=15*(12-utcH);  // Längengrad, an dem die Sonne im Zenit steht
+    const start=Date.UTC(n.getUTCFullYear(),0,0);const doy=(Date.UTC(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate())-start)/864e5;
+    const decl=-23.44*Math.cos((2*Math.PI/365)*(doy+10));return ll2v(decl,lon,1).normalize();}
+  function updateSun(){const d=subsolar();sun.position.copy(d.clone().multiplyScalar(5));sun.target.position.set(0,0,0);
+    sunMesh.position.copy(d.clone().multiplyScalar(3.4));}
+  updateSun();
   const mat=new THREE.MeshPhongMaterial({color:0x16294a,emissive:0x081222,shininess:6,transparent:true,opacity:0.97});
   scene.add(new THREE.Mesh(new THREE.SphereGeometry(1,64,64),mat));
   new THREE.TextureLoader().load('https://unpkg.com/three-globe/example/img/earth-dark.jpg',
@@ -541,8 +553,9 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
     if(hit)window.open(hit.object.userData.url,'_blank');});
-  const clock=new THREE.Clock();const H={renderer};
+  const clock=new THREE.Clock();const H={renderer};let frame=0;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
+    if((frame++%120)===0)updateSun();  // Sonne ~alle 2s nachführen (Zeit ändert sich langsam)
     group.children.forEach(m=>{if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.6);
         m.material.opacity=0.16+0.14*Math.sin(t*2.2+hm.userData.phase);}
       else{const u=m.userData;m.scale.setScalar(u.base*(1+0.55*u.inten*Math.sin(t*2.4+u.phase)));}});
@@ -602,7 +615,7 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   if(t.dataset.t!=='org'){disposeScene(ORG3D);ORG3D=null;}
   if(t.dataset.t==='graph') loadGraph();
   if(t.dataset.t==='timeline') renderTimeline();
-  if(t.dataset.t==='diskurs'){loadDiscourseTopic();loadRadar();}
+  if(t.dataset.t==='diskurs'){loadDiscourseTopic();}
   if(t.dataset.t==='globe') loadGlobe();
   if(t.dataset.t==='org') loadOrg();
   if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);

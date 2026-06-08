@@ -26,3 +26,12 @@ def test_guid_unique_per_source(conn):
         assert False, "expected UNIQUE violation"
     except sqlite3.IntegrityError:
         pass
+
+
+def test_seed_is_idempotent(conn):
+    from marktradar import sources
+    n1 = sources.seed(conn)
+    n2 = sources.seed(conn)
+    assert n1 == len(sources.TIER1)
+    assert n2 == 0  # zweiter Lauf fügt nichts hinzu (UNIQUE url)
+    assert conn.execute("SELECT count(*) c FROM sources").fetchone()["c"] == len(sources.TIER1)

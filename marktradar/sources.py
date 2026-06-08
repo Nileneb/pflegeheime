@@ -73,6 +73,26 @@ TIER1 = [
     _f("Drägerwerk AG", "https://www.presseportal.de/rss/pm_25153.rss2", "DE", 2),
     _f("CompuGroup Medical (CGM)", "https://www.presseportal.de/rss/pm_100921.rss2", "DE", 2),
     _f("MEDIFOX DAN (Pflegesoftware)", "https://www.presseportal.de/rss/pm_156286.rss2", "DE", 2),
+    # ── WHO / EU / Public-Health-Institutionen ───────────────────────────────
+    _f("WHO News (English)", "https://www.who.int/rss-feeds/news-english.xml", "INT", 1),
+    _f("EU-Kommission Presscorner", "https://ec.europa.eu/commission/presscorner/api/rss", "EU", 1),
+    _f("ECDC News", "https://www.ecdc.europa.eu/en/taxonomy/term/1307/feed", "EU", 1),
+    _f("ECDC Publications", "https://www.ecdc.europa.eu/en/taxonomy/term/1244/feed", "EU", 1),
+    _f("RKI aktuell", "https://www.rki.de/SiteGlobals/Functions/RSS/RSS-neue-Dokumente.xml?nn=16776976", "DE", 1),
+    _f("RKI Epidemiologisches Bulletin", "https://www.rki.de/SiteGlobals/Functions/RSS/RSS-EpidBull.xml?nn=16776976", "DE", 1),
+    # ── Parteien (Diskurs-Akteure, Tier 2 — viel allg. Politik, qwen filtert) ─
+    _f("CDU", "https://www.cdu.de/feed", "DE", 2),
+    _f("CDU/CSU Bundestagsfraktion", "https://www.presseportal.de/rss/pm_7846.rss2?langid=1", "DE", 2),
+    _f("CSU", "https://www.csu.de/rss/", "DE", 2),
+    _f("SPD", "https://www.spd.de/aktuelles/feed.rss", "DE", 2),
+    _f("SPD Bundestagsfraktion", "https://www.spdfraktion.de/presse/pressemitteilungen/feed", "DE", 2),
+    _f("Bündnis 90/Die Grünen Bundestagsfraktion", "https://www.gruene-bundestag.de/pressemitteilungen-rss-feed.xml", "DE", 2),
+    _f("FDP", "https://www.fdp.de/rss.xml", "DE", 2),
+    _f("Die Linke", "https://www.die-linke.de/presse/feed.rss", "DE", 2),
+    _f("Die Linke Bundestagsfraktion", "https://www.dielinkebt.de/presse/pressemitteilungen/feed.rss", "DE", 2),
+    _f("AfD", "https://www.afd.de/feed/", "DE", 2),
+    _f("AfD Bundestagsfraktion", "https://afdbundestag.de/pressemitteilungen/feed/", "DE", 2),
+    _f("BSW", "https://bsw-vg.de/feed/", "DE", 2),
 ]
 
 

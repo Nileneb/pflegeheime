@@ -1,142 +1,150 @@
 """Testet das Organigram-Tool: baut die reale Bergische-Diakonie-Struktur
 ausschließlich über organigram.add_unit / add_person auf (genau die Logik, die
 die MCP-Tools add_org_unit / add_org_person deployen) und verifiziert per
-tree()/stats(). Aufruf: python -m scripts.build_bda_organigram [DB_PATH]"""
+tree()/stats(). Aufruf: python -m scripts.build_bda_organigram [DB_PATH]
+
+Knoten-Tupel: (name, type, short_name, icon, color, children)
+  - color nur auf root/sektoren gesetzt → add_unit vererbt sie nach unten.
+  - icon None auf einem Leaf → erbt das Icon des Eltern-Bereichs (im build()).
+"""
 import sys
 from marktradar import db, organigram
 
 TRAEGER = "Bergische Diakonie"
 
-# Verschachtelt: (name, type, short_name, [children])
+# Sektor-Farben (HTML-Vorlage)
+C_LEIT, C_ALT, C_KJF, C_STH, C_BIL, C_WEI = (
+    "#E8860A", "#2E8B57", "#6B48C8", "#1A8C8C", "#C0392B", "#3949AB")
+
 STRUCTURE = (
-    "Bergische Diakonie", "root", "BDA", [
-        ("Leitung & Verwaltung", "sektor", "Leitung", [
-            ("Aufsichtsrat", "bereich", None, []),
-            ("Vorstand", "bereich", None, [
-                ("Sekretariat Vorstand", "angebot", None, []),
-                ("Zentrale Unternehmenskommunikation", "angebot", "ZUK", []),
-                ("Angebotsberatung", "angebot", None, []),
-                ("Zentrale Dienste", "angebot", None, []),
-                ("Verwaltung", "angebot", None, []),
+    "Bergische Diakonie", "root", "BDA", "✝", "#003F7D", [
+        ("Leitung & Verwaltung", "sektor", "Leitung", "🏢", C_LEIT, [
+            ("Aufsichtsrat", "bereich", None, "⚖️", None, []),
+            ("Vorstand", "bereich", None, "🏛️", None, [
+                ("Sekretariat Vorstand", "angebot", None, "📋", None, []),
+                ("Zentrale Unternehmenskommunikation", "angebot", "ZUK", "📣", None, []),
+                ("Angebotsberatung", "angebot", None, "📞", None, []),
+                ("Zentrale Dienste", "angebot", None, "🔧", None, []),
+                ("Verwaltung", "angebot", None, "💼", None, []),
             ]),
         ]),
-        ("Altenhilfe", "sektor", "Alten", [
-            ("Pflegeeinrichtungen", "bereich", None, [
-                ("Haus Otto Ohl", "einrichtung", None, []),
-                ("Haus Karl Heinersdorff", "einrichtung", None, []),
-                ("Haus August von der Twer", "einrichtung", None, []),
-                ("Haus Luise von der Heyden", "einrichtung", None, []),
-                ("Diakoniezentrum Heiligenhaus", "einrichtung", None, []),
-                ("Diakoniezentrum Monheim", "einrichtung", None, []),
-                ("Haus Monheim", "einrichtung", None, []),
-                ("Haus Lennep", "einrichtung", None, []),
-                ("Pflegeeinrichtung Stockder-Stiftung", "einrichtung", None, []),
+        ("Altenhilfe", "sektor", "Alten", "🧓", C_ALT, [
+            ("Pflegeeinrichtungen", "bereich", None, "🏠", None, [
+                ("Haus Otto Ohl", "einrichtung", None, None, None, []),
+                ("Haus Karl Heinersdorff", "einrichtung", None, None, None, []),
+                ("Haus August von der Twer", "einrichtung", None, None, None, []),
+                ("Haus Luise von der Heyden", "einrichtung", None, None, None, []),
+                ("Diakoniezentrum Heiligenhaus", "einrichtung", None, None, None, []),
+                ("Diakoniezentrum Monheim", "einrichtung", None, None, None, []),
+                ("Haus Monheim", "einrichtung", None, None, None, []),
+                ("Haus Lennep", "einrichtung", None, None, None, []),
+                ("Pflegeeinrichtung Stockder-Stiftung", "einrichtung", None, None, None, []),
             ]),
-            ("Tagespflege", "bereich", None, [
-                ("Tagespflege Haus August von der Twer", "einrichtung", None, []),
-                ("Tagespflege Diakoniezentrum Heiligenhaus", "einrichtung", None, []),
-                ("Tagespflege Diakoniezentrum Monheim", "einrichtung", None, []),
+            ("Tagespflege", "bereich", None, "☀️", None, [
+                ("Tagespflege Haus August von der Twer", "einrichtung", None, None, None, []),
+                ("Tagespflege Diakoniezentrum Heiligenhaus", "einrichtung", None, None, None, []),
+                ("Tagespflege Diakoniezentrum Monheim", "einrichtung", None, None, None, []),
             ]),
-            ("Service Wohnen", "bereich", None, [
-                ("Wohnen am Angergarten", "einrichtung", None, []),
-                ("Service Wohnen Diakoniezentrum Heiligenhaus", "einrichtung", None, []),
-                ("Service Wohnen Diakoniezentrum Monheim", "einrichtung", None, []),
+            ("Service Wohnen", "bereich", None, "🏡", None, [
+                ("Wohnen am Angergarten", "einrichtung", None, None, None, []),
+                ("Service Wohnen Diakoniezentrum Heiligenhaus", "einrichtung", None, None, None, []),
+                ("Service Wohnen Diakoniezentrum Monheim", "einrichtung", None, None, None, []),
             ]),
-            ("Ambulante Pflege", "bereich", None, [
-                ("Diakoniestation Niederberg / Remscheid-Lennep", "einrichtung", None, []),
-            ]),
-        ]),
-        ("Kinder, Jugend & Familie", "sektor", "KJF", [
-            ("Erzieherische Hilfen", "bereich", None, [
-                ("Stationäre Angebote", "angebot", None, []),
-                ("Tagesgruppen", "angebot", None, []),
-                ("Soziale Gruppenarbeit", "angebot", None, []),
-                ("Ambulante Erziehungshilfe", "angebot", None, []),
-                ("Beratung Eltern, Kinder & Jugendliche", "angebot", None, []),
-                ("Hilfen straffällige junge Menschen", "angebot", None, []),
-            ]),
-            ("HPZ & Fachklinik Kinder- und Jugendpsychiatrie", "bereich", "HPZ", [
-                ("Institutsambulanz", "angebot", None, []),
-                ("Stationäre Behandlungsgruppen", "angebot", None, []),
-                ("Tagesklinik", "angebot", None, []),
-            ]),
-            ("Evangelische Förderschule (KJF)", "bereich", "Förderschule", [
-                ("Schuldiagnostik (KJF)", "angebot", None, []),
-                ("Stationärer Bereich (KJF)", "angebot", None, []),
-                ("Teilstationärer Bereich (KJF)", "angebot", None, []),
-            ]),
-            ("Projekte KJF", "bereich", None, [
-                ("Care Leaver", "angebot", None, []),
-                ("Moki „inklusiv“", "angebot", None, []),
+            ("Ambulante Pflege", "bereich", None, "🚗", None, [
+                ("Diakoniestation Niederberg / Remscheid-Lennep", "einrichtung", None, None, None, []),
             ]),
         ]),
-        ("Sozialtherapeutische Hilfe", "sektor", "STH", [
-            ("Wohnangebote", "bereich", None, [
-                ("Besondere Wohnformen (§ 42a SGB XII)", "einrichtung", None, []),
-                ("Wohnen zu Hause (Ambulant Betreutes Wohnen)", "einrichtung", None, []),
-                ("Spezialpflege", "einrichtung", None, []),
+        ("Kinder, Jugend & Familie", "sektor", "KJF", "👶", C_KJF, [
+            ("Erzieherische Hilfen", "bereich", None, "🧡", None, [
+                ("Stationäre Angebote", "angebot", None, None, None, []),
+                ("Tagesgruppen", "angebot", None, None, None, []),
+                ("Soziale Gruppenarbeit", "angebot", None, None, None, []),
+                ("Ambulante Erziehungshilfe", "angebot", None, None, None, []),
+                ("Beratung Eltern, Kinder & Jugendliche", "angebot", None, None, None, []),
+                ("Hilfen straffällige junge Menschen", "angebot", None, None, None, []),
             ]),
-            ("Begleitende Fachdienste", "bereich", None, [
-                ("Fachabt. Tagesstruktur & Schulung", "angebot", None, []),
-                ("Psychologischer Dienst", "angebot", None, []),
-                ("Offenes Atelier", "angebot", None, []),
-                ("Freundeskreis Ateliers", "angebot", None, []),
+            ("HPZ & Fachklinik Kinder- und Jugendpsychiatrie", "bereich", "HPZ", "🧠", None, [
+                ("Institutsambulanz", "angebot", None, None, None, []),
+                ("Stationäre Behandlungsgruppen", "angebot", None, None, None, []),
+                ("Tagesklinik", "angebot", None, None, None, []),
             ]),
-            ("Soziale Dienste Niederberg", "bereich", None, [
-                ("Stadtteilzentren", "angebot", None, []),
-                ("Fachstelle Sucht", "angebot", None, []),
-                ("Schuldner- & Insolvenzberatung", "angebot", None, []),
-                ("Wohnungslosenberatung", "angebot", None, []),
-                ("Betreutes Wohnen / Wohnungslosenhilfe", "angebot", None, []),
-                ("Betriebliche Sozialberatung", "angebot", None, []),
-                ("Inklusionshilfe", "angebot", None, []),
-                ("Flexible Erzieherische Hilfen", "angebot", None, []),
-                ("Diakonie InfoPUNKT", "angebot", None, []),
-                ("Projekt FamilienPaten", "angebot", None, []),
-                ("Stadtlotsen", "angebot", None, []),
+            ("Evangelische Förderschule (KJF)", "bereich", "Förderschule", "🏫", None, [
+                ("Schuldiagnostik (KJF)", "angebot", None, None, None, []),
+                ("Stationärer Bereich (KJF)", "angebot", None, None, None, []),
+                ("Teilstationärer Bereich (KJF)", "angebot", None, None, None, []),
+            ]),
+            ("Projekte KJF", "bereich", None, "🌱", None, [
+                ("Care Leaver", "angebot", None, None, None, []),
+                ("Moki „inklusiv“", "angebot", None, None, None, []),
             ]),
         ]),
-        ("Bildung", "sektor", "Bildung", [
-            ("Evangelisches Berufskolleg", "bereich", "EBK", [
-                ("Fachoberschule", "angebot", None, []),
-                ("Sozialassistenz / Heilerziehungshilfe", "angebot", None, []),
-                ("Heilerziehungspflege", "angebot", None, []),
-                ("Sozialpädagogik", "angebot", None, []),
-                ("Heilpädagogik", "angebot", None, []),
+        ("Sozialtherapeutische Hilfe", "sektor", "STH", "🤝", C_STH, [
+            ("Wohnangebote", "bereich", None, "🏘️", None, [
+                ("Besondere Wohnformen (§ 42a SGB XII)", "einrichtung", None, None, None, []),
+                ("Wohnen zu Hause (Ambulant Betreutes Wohnen)", "einrichtung", None, None, None, []),
+                ("Spezialpflege", "einrichtung", None, None, None, []),
             ]),
-            ("Bildungszentrum", "bereich", None, [
-                ("Seminare & Termine", "angebot", None, []),
-                ("Fort- & Weiterbildung", "angebot", None, []),
-                ("Förderung & Finanzierung", "angebot", None, []),
-                ("Seminarraum-Vermietung", "angebot", None, []),
+            ("Begleitende Fachdienste", "bereich", None, "🔬", None, [
+                ("Fachabt. Tagesstruktur & Schulung", "angebot", None, None, None, []),
+                ("Psychologischer Dienst", "angebot", None, None, None, []),
+                ("Offenes Atelier", "angebot", None, None, None, []),
+                ("Freundeskreis Ateliers", "angebot", None, None, None, []),
             ]),
-            ("Schule für Pflegeberufe", "bereich", None, [
-                ("Pflegeausbildung (generalistisch)", "einrichtung", None, []),
-            ]),
-            ("Evangelische Förderschule (Bildung)", "bereich", None, [
-                ("Schuldiagnostik (Bildung)", "angebot", None, []),
-                ("Stationärer Bereich (Bildung)", "angebot", None, []),
-                ("Teilstationärer Bereich (Bildung)", "angebot", None, []),
+            ("Soziale Dienste Niederberg", "bereich", None, "🌍", None, [
+                ("Stadtteilzentren", "angebot", None, None, None, []),
+                ("Fachstelle Sucht", "angebot", None, None, None, []),
+                ("Schuldner- & Insolvenzberatung", "angebot", None, None, None, []),
+                ("Wohnungslosenberatung", "angebot", None, None, None, []),
+                ("Betreutes Wohnen / Wohnungslosenhilfe", "angebot", None, None, None, []),
+                ("Betriebliche Sozialberatung", "angebot", None, None, None, []),
+                ("Inklusionshilfe", "angebot", None, None, None, []),
+                ("Flexible Erzieherische Hilfen", "angebot", None, None, None, []),
+                ("Diakonie InfoPUNKT", "angebot", None, None, None, []),
+                ("Projekt FamilienPaten", "angebot", None, None, None, []),
+                ("Stadtlotsen", "angebot", None, None, None, []),
             ]),
         ]),
-        ("Weitere Angebote", "sektor", "Weitere", [
-            ("Tafel", "bereich", None, [
-                ("Lebensmittelausgabe", "angebot", None, []),
+        ("Bildung", "sektor", "Bildung", "🎓", C_BIL, [
+            ("Evangelisches Berufskolleg", "bereich", "EBK", "🏫", None, [
+                ("Fachoberschule", "angebot", None, None, None, []),
+                ("Sozialassistenz / Heilerziehungshilfe", "angebot", None, None, None, []),
+                ("Heilerziehungspflege", "angebot", None, None, None, []),
+                ("Sozialpädagogik", "angebot", None, None, None, []),
+                ("Heilpädagogik", "angebot", None, None, None, []),
             ]),
-            ("Integrationsfachdienst Wuppertal", "bereich", None, [
-                ("IFD Wuppertal", "angebot", None, []),
+            ("Bildungszentrum", "bereich", None, "📚", None, [
+                ("Seminare & Termine", "angebot", None, None, None, []),
+                ("Fort- & Weiterbildung", "angebot", None, None, None, []),
+                ("Förderung & Finanzierung", "angebot", None, None, None, []),
+                ("Seminarraum-Vermietung", "angebot", None, None, None, []),
             ]),
-            ("Sozialpsychiatrische Zentren", "bereich", None, [
-                ("SPZ Wuppertal", "angebot", None, []),
+            ("Schule für Pflegeberufe", "bereich", None, "💉", None, [
+                ("Pflegeausbildung (generalistisch)", "einrichtung", None, None, None, []),
             ]),
-            ("Ko(m)-Kolleg", "bereich", None, [
-                ("Fortbildung Kompetenzen", "angebot", None, []),
+            ("Evangelische Förderschule (Bildung)", "bereich", None, "🌟", None, [
+                ("Schuldiagnostik (Bildung)", "angebot", None, None, None, []),
+                ("Stationärer Bereich (Bildung)", "angebot", None, None, None, []),
+                ("Teilstationärer Bereich (Bildung)", "angebot", None, None, None, []),
             ]),
-            ("Nutzerbeirat", "bereich", None, [
-                ("Mitbestimmung der Nutzenden", "angebot", None, []),
+        ]),
+        ("Weitere Angebote", "sektor", "Weitere", "➕", C_WEI, [
+            ("Tafel", "bereich", None, "🥗", None, [
+                ("Lebensmittelausgabe", "angebot", None, None, None, []),
             ]),
-            ("rückenwind", "bereich", None, [
-                ("Unterstützungsprogramm", "angebot", None, []),
+            ("Integrationsfachdienst Wuppertal", "bereich", None, "♿", None, [
+                ("IFD Wuppertal", "angebot", None, None, None, []),
+            ]),
+            ("Sozialpsychiatrische Zentren", "bereich", None, "🧩", None, [
+                ("SPZ Wuppertal", "angebot", None, None, None, []),
+            ]),
+            ("Ko(m)-Kolleg", "bereich", None, "🎓", None, [
+                ("Fortbildung Kompetenzen", "angebot", None, None, None, []),
+            ]),
+            ("Nutzerbeirat", "bereich", None, "🗳️", None, [
+                ("Mitbestimmung der Nutzenden", "angebot", None, None, None, []),
+            ]),
+            ("rückenwind", "bereich", None, "💚", None, [
+                ("Unterstützungsprogramm", "angebot", None, None, None, []),
             ]),
         ]),
     ],
@@ -151,14 +159,15 @@ PERSONS = [
 def build(conn):
     name_to_id = {}
 
-    def insert(node, parent_id):
-        name, typ, short, children = node
-        res = organigram.add_unit(conn, name, parent_id, typ, TRAEGER, short)
+    def insert(node, parent_id, parent_icon):
+        name, typ, short, icon, color, children = node
+        eff_icon = icon or parent_icon  # Leaf ohne Icon erbt das des Bereichs
+        res = organigram.add_unit(conn, name, parent_id, typ, TRAEGER, short, eff_icon, color)
         name_to_id[name] = res["id"]
         for ch in children:
-            insert(ch, res["id"])
+            insert(ch, res["id"], eff_icon)
 
-    insert(STRUCTURE, None)
+    insert(STRUCTURE, None, None)
 
     for first, last, role, unit_name, typ in PERSONS:
         uid = name_to_id.get(unit_name)
@@ -181,10 +190,11 @@ def main():
     def count(n):
         return 1 + sum(count(c) for c in n["children"])
     for r in roots:
-        print(f"ROOT {r['name']}: {count(r)} Knoten, {len(r['children'])} Sektoren")
+        print(f"ROOT {r['icon']} {r['name']} [{r['color']}]: {count(r)} Knoten, "
+              f"{len(r['children'])} Sektoren")
         for sek in r["children"]:
-            print(f"  {sek['icon'] or '•'} {sek['name']}: {len(sek['children'])} Bereiche, "
-                  f"{count(sek)-1} Unterknoten")
+            print(f"  {sek['icon']} {sek['name']} [{sek['color']}]: "
+                  f"{len(sek['children'])} Bereiche, {count(sek)-1} Unterknoten")
     print("PERSONEN:", [f"{p['first_name']} {p['last_name']} → {p['unit']}"
                         for p in organigram.persons(conn, traeger=TRAEGER)])
 

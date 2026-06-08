@@ -119,16 +119,25 @@ def stats(conn, traeger: str = DEFAULT_TRAEGER) -> dict:
 
 
 def add_unit(conn, name: str, parent_id: int | None = None, type: str = "bereich",
-             traeger: str = DEFAULT_TRAEGER, short_name: str = None) -> dict:
+             traeger: str = DEFAULT_TRAEGER, short_name: str = None,
+             icon: str = None, color: str = None) -> dict:
     level = 0
     if parent_id:
-        p = conn.execute("SELECT level FROM org_units WHERE id=?", (parent_id,)).fetchone()
-        level = (p["level"] + 1) if p else 1
+        p = conn.execute("SELECT level,color FROM org_units WHERE id=?", (parent_id,)).fetchone()
+        if p:
+            level = p["level"] + 1
+            # Farbe vom Parent erben, wenn keine angegeben (Sektor-Farbe nach unten)
+            if color is None:
+                color = p["color"]
+        else:
+            level = 1
     cur = conn.execute(
-        "INSERT INTO org_units(traeger,name,short_name,parent_id,level,type) "
-        "VALUES (?,?,?,?,?,?)", (traeger, name, short_name, parent_id, level, type))
+        "INSERT INTO org_units(traeger,name,short_name,parent_id,level,type,icon,color) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (traeger, name, short_name, parent_id, level, type, icon, color))
     conn.commit()
-    return {"id": cur.lastrowid, "name": name, "parent_id": parent_id, "level": level}
+    return {"id": cur.lastrowid, "name": name, "parent_id": parent_id,
+            "level": level, "icon": icon, "color": color}
 
 
 def add_person(conn, first_name: str, last_name: str, role: str = None,

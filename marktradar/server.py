@@ -192,9 +192,12 @@ def org_stats(traeger: str = "Bergische Diakonie") -> dict:
 
 @mcp.tool()
 def add_org_unit(name: str, parent_id: int | None = None, type: str = "bereich",
-                 traeger: str = "Bergische Diakonie", short_name: str | None = None) -> dict:
-    """Legt eine neue Org-Einheit unter parent_id an (level wird abgeleitet)."""
-    return organigram.add_unit(_conn, name, parent_id, type, traeger, short_name)
+                 traeger: str = "Bergische Diakonie", short_name: str | None = None,
+                 icon: str | None = None, color: str | None = None) -> dict:
+    """Legt eine neue Org-Einheit unter parent_id an (level wird abgeleitet).
+    icon = Emoji (z.B. "🏠"), color = Hex (z.B. "#2E8B57"). Ohne color erbt die
+    Einheit die Farbe des Parents."""
+    return organigram.add_unit(_conn, name, parent_id, type, traeger, short_name, icon, color)
 
 
 @mcp.tool()

@@ -11,3 +11,6 @@ scraper.log
 .venv
 pflege.db-wal
 pflege.db-shm
+data/
+out/
+docker/seed/pflege.db

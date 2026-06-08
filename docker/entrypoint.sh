@@ -7,8 +7,10 @@ if [ ! -f "$PFLEGE_DB" ]; then
     echo "[entrypoint] seeding $PFLEGE_DB from baked snapshot"
     cp /seed/pflege.db "$PFLEGE_DB"
   else
-    echo "[entrypoint] cold start → migrate CSV + seed sources"
-    python -m marktradar.migrate || true
+    # WHY: Image enthält bewusst KEINE PII-Daten. Die Prod-DB wird ins Volume
+    # geseedet (out-of-band, LAN). Hier nur leeres Schema + Quellen-Registry,
+    # damit der Server bootet, bis das Volume befüllt ist / Ingest gelaufen ist.
+    echo "[entrypoint] no DB → empty schema + source registry (seed volume out-of-band)"
     python - <<'PY'
 from marktradar import db, sources
 c = db.connect(); db.bootstrap(c); sources.seed(c)

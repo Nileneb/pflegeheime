@@ -16,7 +16,8 @@ CHAT_HOST = os.getenv("OLLAMA_CHAT_HOST", OLLAMA_HOST)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 _EMBED_KEY = os.getenv("EMBED_API_KEY") or os.getenv("OLLAMA_API_KEY")
-_CHAT_KEY = os.getenv("CHAT_API_KEY") or os.getenv("OLLAMA_API_KEY")
+_CHAT_KEY = (os.getenv("CHAT_API_KEY") or os.getenv("OLLAMA_CLOUD_API_KEY")
+             or os.getenv("OLLAMA_API_KEY"))
 
 
 def _hdr(key):

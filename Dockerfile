@@ -4,8 +4,6 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY marktradar/ ./marktradar/
-COPY data/ ./data/
-COPY out/newsletter_kandidaten.csv ./out/newsletter_kandidaten.csv
 COPY docker/seed/ /seed/
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

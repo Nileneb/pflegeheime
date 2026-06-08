@@ -294,6 +294,7 @@ a{color:inherit;text-decoration:none}
 .row{display:grid;grid-template-columns:74px 96px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid #131c2a;align-items:center}
 .row .ti{grid-column:3;color:#e6ebf2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .meta{grid-column:3;font-size:10px;color:var(--mut)}
+.fhash{color:#5b8def;font-size:10px;margin-left:4px}
 .row.fresh{background:#0d1f15;border-left:2px solid #2ecc71;padding-left:6px;margin-left:-8px}
 .dt{color:var(--mut);font-size:11px}
 .ev{font-size:9px;border:1px solid;border-radius:3px;padding:2px 4px;text-align:center;letter-spacing:1px}
@@ -567,8 +568,9 @@ function renderOverview(o){
 function renderFeed(items){
   $('feed').innerHTML=items.map(a=>{const c=evc(a.event_type);const et=(a.event_type||'·').toUpperCase();
     const ent=a.entities?` · ${esc(a.entities)}`:'';
+    const tags=(a.hashtags||'').split(',').filter(Boolean).slice(0,4).map(h=>`<span class=fhash>#${esc(h)}</span>`).join('');
     return `<div class="row${a.is_new?' fresh':''}"><span class=dt>${esc((a.published||'').slice(0,10))}</span><span class=ev style="color:${c};border-color:${c}">${et}</span>`+
-    `<a class=ti href="${esc(a.link||'#')}" target=_blank>${esc((a.title||'').slice(0,90))}</a><span class=meta>${esc(a.source_domain||'')}${ent}</span></div>`;}).join('');
+    `<a class=ti href="${esc(a.link||'#')}" target=_blank>${esc((a.title||'').slice(0,90))}</a><span class=meta>${esc(a.source_domain||'')}${ent} ${tags}</span></div>`;}).join('');
 }
 function renderGraph(g){
   const nodes=g.nodes.filter(n=>n.articles>0).slice(0,9);

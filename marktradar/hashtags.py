@@ -14,6 +14,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
+import requests
+
 UA = "pflege-marktradar/1.0 (+https://pflege.linn.games)"
 TIMEOUT = 12
 
@@ -216,9 +218,88 @@ def update(conn, hashtag_id, term=None, color=None, active=None):
 
 def delete(conn, hashtag_id):
     conn.execute("DELETE FROM hashtag_posts WHERE hashtag_id=?", (hashtag_id,))
+    conn.execute("DELETE FROM article_hashtags WHERE hashtag_id=?", (hashtag_id,))
     conn.execute("DELETE FROM hashtags WHERE id=?", (hashtag_id,))
     conn.commit()
     return {"deleted": hashtag_id}
+
+
+_PALETTE = ["#5b8def", "#2ecc71", "#f0a830", "#9b6dff", "#26c6da", "#ff7043",
+            "#67d98b", "#c792ea", "#e84393", "#1abc9c", "#ff4d4d"]
+
+
+def _autocolor(term):
+    return _PALETTE[abs(hash(term)) % len(_PALETTE)]
+
+
+_EXTRACT_SYS = (
+    "Du extrahierst aus einer deutschen Pflege-/Gesundheits-/Sozial-Meldung max. 2 prägnante "
+    "Themen-Schlagworte (je EIN Wort, deutsch, ohne #, z.B. Pflegereform, Personalmangel, "
+    "Heimaufsicht, Tariftreue). Nur Sachthemen — KEINE Eigennamen, Orte, Personen, Firmen. "
+    "Wenn nichts Pflege-/Sozialrelevantes: leeres Array. Antworte NUR als JSON-Array von "
+    'Strings, z.B. ["Pflegereform","Tariftreue"].')
+
+
+def _extract_hashtags(title, summary):
+    """LLM (qwen) extrahiert 1-2 Themen-Hashtags aus einer Meldung → Liste[str]."""
+    from marktradar import embeddings
+    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
+    try:
+        r = requests.post(
+            f"{embeddings.CHAT_HOST}/api/chat", headers=embeddings.chat_headers(),
+            json={"model": model, "format": "json", "stream": False, "think": False,
+                  "messages": [{"role": "system", "content": _EXTRACT_SYS},
+                               {"role": "user", "content": f"Titel: {title}\nText: {summary or ''}"[:1200]}],
+                  "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 60}}, timeout=60)
+        r.raise_for_status()
+        out = json.loads(r.json().get("message", {}).get("content", "") or "[]")
+        if isinstance(out, dict):
+            out = out.get("hashtags") or out.get("themen") or list(out.values())
+        return [str(x).lstrip("#").strip() for x in (out or [])
+                if isinstance(x, str) and 2 < len(str(x)) < 30][:2]
+    except Exception:
+        return []
+
+
+def tag_articles(conn, article_ids=None, auto_create=False, limit=400):
+    """Verknüpft Artikel ↔ Hashtags (article_hashtags). Matcht aktive Hashtags (Wortgrenze);
+    mit auto_create bekommen relevante Artikel OHNE Treffer ein neues Hashtag per LLM
+    („Event wird Hashtag"). Gibt {linked, created, articles}."""
+    tags = [dict(r) for r in conn.execute("SELECT id,term FROM hashtags WHERE active=1").fetchall()]
+    pats = [(t["id"], re.compile(r"\b" + re.escape(t["term"]) + r"\w*", re.I)) for t in tags]
+    if article_ids is None:
+        rows = conn.execute(
+            "SELECT id,title,summary,relevant FROM articles "
+            "WHERE id NOT IN (SELECT article_id FROM article_hashtags) "
+            "ORDER BY published DESC LIMIT ?", (limit,)).fetchall()
+    else:
+        if not article_ids:
+            return {"linked": 0, "created": 0, "articles": 0}
+        ph = ",".join("?" * len(article_ids))
+        rows = conn.execute(
+            f"SELECT id,title,summary,relevant FROM articles WHERE id IN ({ph})",
+            list(article_ids)).fetchall()
+    linked = created = 0
+    for a in rows:
+        text = f"{a['title'] or ''} {a['summary'] or ''}"
+        hits = [hid for (hid, p) in pats if p.search(text)]
+        if not hits and auto_create and a["relevant"]:
+            for term in _extract_hashtags(a["title"], a["summary"]):
+                existed = conn.execute("SELECT id FROM hashtags WHERE term=?", (term,)).fetchone()
+                row = add(conn, term, _autocolor(term))
+                if row.get("id"):
+                    if not existed:
+                        created += 1
+                        pats.append((row["id"], re.compile(r"\b" + re.escape(term) + r"\w*", re.I)))
+                    hits.append(row["id"])
+        for hid in hits:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO article_hashtags(article_id,hashtag_id) VALUES (?,?)",
+                (a["id"], hid))
+            if cur.rowcount:
+                linked += 1
+    conn.commit()
+    return {"linked": linked, "created": created, "articles": len(rows)}
 
 
 # ── Refresh: je aktivem Hashtag aus allen Quellen holen, geokodieren, upserten ──

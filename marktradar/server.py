@@ -259,6 +259,14 @@ def hashtag_map() -> dict:
 
 
 @mcp.tool()
+def tag_news_hashtags(auto_create: bool = False, limit: int = 400) -> dict:
+    """Verknüpft News-Artikel mit Hashtags (matcht aktive Hashtags). auto_create=True:
+    relevante Artikel ohne Treffer bekommen per LLM ein neues Themen-Hashtag (Event wird
+    Hashtag). Speist Trends/Diskurs/Globus. Gibt {linked, created, articles}."""
+    return hashtags.tag_articles(_conn, None, auto_create=auto_create, limit=limit)
+
+
+@mcp.tool()
 def geocode_org(traeger: str = "Bergische Diakonie") -> dict:
     """Geokodiert die Einrichtungen eines Trägers (Nominatim) → lat/lon für die
     begehbare 3D-OSM-Szene. Einmalig nötig; Nominatim-Policy max 1 req/s."""

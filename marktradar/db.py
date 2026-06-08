@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS hashtag_posts (
     location_text TEXT, lat REAL, lon REAL, published TEXT, fetched_at TEXT,
     UNIQUE(hashtag_id, url)
 );
+CREATE TABLE IF NOT EXISTS article_hashtags (
+    article_id INTEGER REFERENCES articles(id),
+    hashtag_id INTEGER REFERENCES hashtags(id),
+    auto INTEGER DEFAULT 0,
+    PRIMARY KEY (article_id, hashtag_id)
+);
 """
 
 VEC_SCHEMA = (

@@ -156,12 +156,14 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
                      (None if rel is None else int(rel), kat, grund, aid))
     conn.commit()
     # Entity-Tagging + Event-Klassifikation der neuen Items (deterministisch)
-    from marktradar import entities
+    from marktradar import entities, hashtags
     tagged = entities.tag_articles(conn, new_ids)
     entities.classify_events(conn, new_ids)
     stance = entities.classify_topics(conn, new_ids)
+    # Hashtag-Bildung: matchen + bei Bedarf neues Hashtag aus dem Event (LLM)
+    ht = hashtags.tag_articles(conn, new_ids, auto_create=True)
     return {"new": new_total, "embedded": len(new_ids), "tagged": tagged,
-            "stance": stance, "errors": errors, "sources": len(srcs)}
+            "stance": stance, "hashtags": ht, "errors": errors, "sources": len(srcs)}
 
 
 def backfill_embeddings(conn, limit: int | None = None) -> int:

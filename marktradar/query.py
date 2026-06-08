@@ -150,7 +150,9 @@ def feed(conn, limit: int = 40, since_ts: str | None = None) -> list[dict]:
         "SELECT a.id,a.title,a.published,a.fetched_at,a.event_type,a.kategorie,"
         "a.link,a.source_domain,"
         "(SELECT group_concat(e.name,', ') FROM article_entities ae "
-        " JOIN entities e ON e.id=ae.entity_id WHERE ae.article_id=a.id) AS entities "
+        " JOIN entities e ON e.id=ae.entity_id WHERE ae.article_id=a.id) AS entities,"
+        "(SELECT group_concat(h.term,',') FROM article_hashtags ah "
+        " JOIN hashtags h ON h.id=ah.hashtag_id WHERE ah.article_id=a.id) AS hashtags "
         "FROM articles a ORDER BY a.published DESC NULLS LAST, a.id DESC LIMIT ?",
         (limit,)).fetchall()
     out = []

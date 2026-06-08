@@ -271,12 +271,16 @@ def test_country_language_keys_in_geojson():
     with open(data_dir / "ne_110m_admin_0_countries.geojson") as f:
         gj = json.load(f)
 
+    # EH-first, matching the viewer client (buildLangCanvas / resolveCountryIso):
+    # it resolves a country's code as ISO_A2_EH (if not -99) else ISO_A2. The
+    # only country where the two differ is Taiwan (ISO_A2='CN-TW', ISO_A2_EH='TW')
+    # — keying it any other way left it unmapped on the globe.
     geojson_codes = set()
     for feat in gj["features"]:
         p = feat["properties"]
         iso = p.get("ISO_A2", "")
         iso_eh = p.get("ISO_A2_EH", "")
-        effective = iso if iso and iso != "-99" else iso_eh
+        effective = iso_eh if iso_eh and iso_eh != "-99" else iso
         if effective and effective != "-99":
             geojson_codes.add(effective)
 

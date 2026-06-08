@@ -764,7 +764,7 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const group=new THREE.Group();scene.add(group);
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
   const pgeo=new THREE.SphereGeometry(1,8,8);
-  points.forEach((p,idx)=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
+  points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
     const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
     const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w);  // Trend-Gewicht → Größe (konstant)
     // Quellen sind RUHIG: Helligkeit fix aus Gewicht, kein Sweep. Aufblinken passiert nur auf den Arcs.
@@ -800,8 +800,14 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
       ARCS.push({curve,glow,glowMat,tube,tubeMat,speed:0.22+0.5*nn,phase:i*0.37,glowBase:0.008+0.012*nn,opBase:0.18+0.22*nn});
     });
     arcGroup.visible=ARCS_ON;
-    if(total>drawable.length){const note=$('arcnote');if(note)note.textContent=`${drawable.length}/${total} Paare als Arc (Rest: kein Geo / Cap ${CAP}).`;}
+    const _note=$('arcnote');if(_note){
+      const capApplied=pairs.length<total;const geoMissing=drawable.length<pairs.length;
+      if(capApplied&&geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (Top ${CAP} nach Häufigkeit, davon ${pairs.length-drawable.length} ohne auflösbaren Geo-Centroid).`;
+      else if(capApplied)_note.textContent=`Top ${CAP} von ${total} Paaren dargestellt (nach Häufigkeit).`;
+      else if(geoMissing)_note.textContent=`${drawable.length}/${total} Paare als Arc (${total-drawable.length} ohne auflösbaren Geo-Centroid).`;
+      else _note.textContent='';}
   })();
+  const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
   renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);

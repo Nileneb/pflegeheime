@@ -1,15 +1,52 @@
 """FastMCP-Server: Pflege-Marktradar. Tools delegieren an getestete Module.
 
 Transport: stdio (default) oder streamable-http (für Langdock-Integration) via
-  PFLEGE_MCP_TRANSPORT=streamable-http PFLEGE_MCP_HOST=0.0.0.0 PFLEGE_MCP_PORT=8766
+  PFLEGE_MCP_TRANSPORT=streamable-http PFLEGE_MCP_HOST=0.0.0.0 PFLEGE_MCP_PORT=8088
+
+Auth: OAuth-Resource-Server (RFC 9728). Mit konfiguriertem JWT-Public-Key serviert
+FastMCP /.well-known/oauth-protected-resource → Langdock entdeckt den Authorization-
+Server (app.linn.games) und führt den OAuth-Flow; die Tokens validiert der
+TokenVerifier (RS256) hier. Ohne Key → keine Auth (stdio/dev).
 """
 import os
 
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 
-from marktradar import db, ingest, query
+from marktradar import auth, db, ingest, query
 
-mcp = FastMCP("pflege-marktradar")
+OAUTH_ISSUER = os.getenv("PFLEGE_OAUTH_ISSUER", "https://app.linn.games")
+PUBLIC_URL = os.getenv("PFLEGE_PUBLIC_URL", "https://pflege.linn.games")
+
+
+class _JWTVerifier(TokenVerifier):
+    async def verify_token(self, token: str) -> AccessToken | None:
+        claims = auth.verify(token)
+        if claims is None:
+            return None
+        scope = claims.get("scope") or ""
+        return AccessToken(
+            token=token,
+            client_id=str(claims.get("client_id") or claims.get("sub") or "unknown"),
+            scopes=scope.split() if scope else [],
+            expires_at=claims.get("exp"),
+            resource=auth.AUDIENCE,
+        )
+
+
+_auth_kwargs = {}
+if auth.PUBLIC_KEY:  # Prod: OAuth-Resource-Server aktiv
+    _auth_kwargs = dict(
+        token_verifier=_JWTVerifier(),
+        auth=AuthSettings(
+            issuer_url=OAUTH_ISSUER,
+            resource_server_url=PUBLIC_URL,
+            required_scopes=[],
+        ),
+    )
+
+mcp = FastMCP("pflege-marktradar", **_auth_kwargs)
 _conn = db.connect()
 db.bootstrap(_conn)
 
@@ -98,9 +135,9 @@ def main():
     if transport == "streamable-http":
         import uvicorn
 
-        from marktradar.auth import JWTAuthMiddleware
-        app = mcp.streamable_http_app()
-        app.add_middleware(JWTAuthMiddleware)  # RS256-JWT (app.linn.games), ?token= ok
+        # FastMCP serviert OAuth-Resource-Metadata + erzwingt Token-Verifikation;
+        # der ASGI-Shim hebt nur ?token= in den Authorization-Header.
+        app = auth.QueryTokenASGI(mcp.streamable_http_app())
         uvicorn.run(app, host=os.getenv("PFLEGE_MCP_HOST", "127.0.0.1"),
                     port=int(os.getenv("PFLEGE_MCP_PORT", "8088")))
     else:

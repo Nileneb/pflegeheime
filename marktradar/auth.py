@@ -1,17 +1,15 @@
-"""RS256-JWT-Auth fürs streamable-http MCP (Hausmuster wie paper-search).
+"""RS256-Token-Verifikation für den OAuth-Resource-Server (server.py konfiguriert
+FastMCP damit). Verifiziert die von app.linn.games ausgestellten JWTs gegen den
+RS256-Public-Key. Ohne konfigurierten Public-Key → keine Prüfung (stdio/dev).
 
-Verifiziert Bearer-Tokens gegen den RS256-Public-Key (app.linn.games-JWTs).
-Token kommt aus Authorization-Header ODER ?token= (Proxy/Synology strippt
-Authorization). Ohne konfigurierten Public-Key → keine Prüfung (stdio/dev)."""
+Zusätzlich ein ASGI-Shim, der ?token= in den Authorization-Header hebt (falls ein
+Proxy Authorization strippt), bevor FastMCPs Auth läuft."""
 import base64
 import os
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from urllib.parse import parse_qs
 
 ISSUER = os.getenv("PFLEGE_JWT_ISSUER", "https://app.linn.games")
 AUDIENCE = os.getenv("PFLEGE_JWT_AUDIENCE", "pflege-marktradar")
-_OPEN_PATHS = {"/health", "/.well-known/oauth-authorization-server"}
 
 
 def _load_public_key() -> str | None:
@@ -46,18 +44,21 @@ def verify(token: str) -> dict | None:
         return None
 
 
-def _token(request) -> str | None:
-    h = request.headers.get("authorization", "")
-    if h.lower().startswith("bearer "):
-        return h[7:].strip()
-    return request.query_params.get("token")
+class QueryTokenASGI:
+    """ASGI-Wrapper: hebt ?token=… in den Authorization-Header, falls keiner da ist
+    (Proxy/Synology strippt Authorization). Läuft VOR FastMCPs OAuth-Auth."""
 
+    def __init__(self, app):
+        self.app = app
 
-class JWTAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if PUBLIC_KEY is None or request.url.path in _OPEN_PATHS:
-            return await call_next(request)
-        tok = _token(request)
-        if not tok or verify(tok) is None:
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = scope.get("headers") or []
+            if not any(k == b"authorization" for k, _ in headers):
+                qs = parse_qs(scope.get("query_string", b"").decode())
+                tok = (qs.get("token") or [None])[0]
+                if tok:
+                    scope = dict(scope)
+                    scope["headers"] = list(headers) + [
+                        (b"authorization", f"Bearer {tok}".encode())]
+        await self.app(scope, receive, send)

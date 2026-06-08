@@ -151,11 +151,22 @@ class Handler(BaseHTTPRequestHandler):
                     if row["address"]:
                         mm = re.search(r"\d{5}\s+([A-Za-zäöüÄÖÜß .-]+?)(?:,|$)", row["address"])
                         ort = mm.group(1).strip() if mm else ""
-                    query = f"{row['name']} {ort or row['traeger'] or ''}".strip()
-                    try:
-                        _json(self, {"query": query, "results": ddg_images.search(query, n=18)})
-                    except Exception as e:
-                        _json(self, {"error": f"{type(e).__name__}: {e}", "query": query})
+                    base = f"{row['name']} {ort or row['traeger'] or ''}".strip()
+                    # Gebäude/Vogelperspektive-Begriffe → Fassaden/Luftbilder statt Event-Fotos
+                    queries = [base + " Luftaufnahme", base + " Gebäude Außenansicht", base]
+                    results, seen, errs = [], set(), []
+                    for qq in queries:
+                        try:
+                            for r in ddg_images.search(qq, n=10):
+                                if r.get("image") and r["image"] not in seen:
+                                    seen.add(r["image"])
+                                    results.append(r)
+                        except Exception as e:
+                            errs.append(str(e))
+                    out = {"query": " · ".join(queries), "results": results[:24]}
+                    if not results and errs:
+                        out["error"] = errs[0]
+                    _json(self, out)
             elif u.path == "/api/org/streetview":
                 row = conn.execute("SELECT name,lat,lon FROM org_units WHERE id=?",
                                    (int(q.get("id", ["0"])[0]),)).fetchone()
@@ -895,8 +906,9 @@ function openReskin(){if(!SCENE||!SCENE.focal){console.warn('kein Fokus-Gebäude
   $('reskinov').classList.remove('hide');setRkMode('osm');}
 async function sendReskin(){const imgs=RKMODE==='photo'?RKSEL:RKIMGS;
   if(!imgs.length){$('rkstatus').textContent=RKMODE==='photo'?'erst Fotos wählen':'kein Modell';return;}
-  const st=$('rkstatus');st.textContent='sende '+imgs.length+(RKMODE==='photo'?' Fotos':' Ansichten')+' an Meshy…';$('rksend').disabled=true;
-  try{const r=await (await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:imgs})).json();
+  const st=$('rkstatus');st.textContent='lädt + prüft + sendet '+imgs.length+(RKMODE==='photo'?' Fotos':' Ansichten')+' an Meshy… (kann ~20s dauern)';$('rksend').disabled=true;
+  try{const resp=await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:imgs});
+    const txt=await resp.text();let r;try{r=JSON.parse(txt);}catch(_){r={error:'HTTP '+resp.status+': '+txt.slice(0,160)};}
     st.innerHTML=r.error?('Fehler: '+esc(r.error)):('✓ Meshy-Task <b>'+esc(r.task_id||r.job_id||'?')+'</b> gestartet — GLB kommt per Webhook.');
   }catch(e){st.textContent='Fehler: '+e;}finally{$('rksend').disabled=false;}}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};

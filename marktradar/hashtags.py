@@ -241,8 +241,35 @@ _EXTRACT_SYS = (
     'Strings, z.B. ["Pflegereform","Tariftreue"].')
 
 
+_JSON_ARR = re.compile(r"\[.*?\]", re.S)
+
+
+def _parse_terms(raw):
+    """Robust: zieht ein JSON-Array aus content ODER thinking (gpt-oss schreibt die
+    Antwort in den thinking-Channel, wenn content leer bleibt)."""
+    if not raw:
+        return []
+    try:
+        out = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        m = _JSON_ARR.search(raw)  # JSON-Array irgendwo im Freitext (reasoning-Channel)
+        if not m:
+            return []
+        try:
+            out = json.loads(m.group(0))
+        except (json.JSONDecodeError, ValueError):
+            return []
+    if isinstance(out, dict):
+        out = out.get("hashtags") or out.get("themen") or list(out.values())
+    return [str(x).lstrip("#").strip() for x in (out or [])
+            if isinstance(x, str) and 2 < len(str(x)) < 30][:2]
+
+
 def _extract_hashtags(title, summary):
-    """LLM (qwen) extrahiert 1-2 Themen-Hashtags aus einer Meldung → Liste[str]."""
+    """LLM extrahiert 1-2 Themen-Hashtags aus einer Meldung → Liste[str].
+    WHY: gpt-oss:20b (ollama.com) ist ein Reasoning-Modell — mit knappem num_predict
+    landet die Antwort im thinking-Channel statt in content; daher beide auswerten
+    und num_predict großzügig, damit nach dem Reasoning noch content folgt."""
     from marktradar import embeddings
     model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     try:
@@ -251,13 +278,10 @@ def _extract_hashtags(title, summary):
             json={"model": model, "format": "json", "stream": False, "think": False,
                   "messages": [{"role": "system", "content": _EXTRACT_SYS},
                                {"role": "user", "content": f"Titel: {title}\nText: {summary or ''}"[:1200]}],
-                  "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 60}}, timeout=60)
+                  "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 400}}, timeout=90)
         r.raise_for_status()
-        out = json.loads(r.json().get("message", {}).get("content", "") or "[]")
-        if isinstance(out, dict):
-            out = out.get("hashtags") or out.get("themen") or list(out.values())
-        return [str(x).lstrip("#").strip() for x in (out or [])
-                if isinstance(x, str) and 2 < len(str(x)) < 30][:2]
+        msg = r.json().get("message", {}) or {}
+        return _parse_terms(msg.get("content")) or _parse_terms(msg.get("thinking"))
     except Exception:
         return []
 

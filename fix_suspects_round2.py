@@ -21,8 +21,7 @@ import re
 import json
 import time
 import base64
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 import requests
 from dotenv import load_dotenv
 
@@ -174,12 +173,8 @@ def reverse_geocode(lat: float, lon: float, session: requests.Session) -> str | 
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = db_connect()
+    cur = conn.cursor()
 
     # ---- Phase A: format-edge cases ----
     cur.execute(

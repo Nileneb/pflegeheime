@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>Test-Pflegeblog</title>
+  <item>
+    <title>Caritas eröffnet neues Pflegeheim in Aachen</title>
+    <link>https://example.org/news/caritas-aachen</link>
+    <guid>https://example.org/news/caritas-aachen</guid>
+    <pubDate>Mon, 02 Jun 2026 08:00:00 +0000</pubDate>
+    <description>Die Caritas eröffnet eine neue stationäre Einrichtung.</description>
+  </item>
+  <item>
+    <title>Pflegefachkraft (m/w/d) gesucht</title>
+    <link>https://example.org/jobs/pfk</link>
+    <guid>https://example.org/jobs/pfk</guid>
+    <pubDate>Sun, 01 Jun 2026 08:00:00 +0000</pubDate>
+    <description>Wir suchen zum nächstmöglichen Zeitpunkt.</description>
+  </item>
+</channel></rss>

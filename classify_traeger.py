@@ -11,8 +11,7 @@ Output: 'traeger' column gets one of:
 
 import os
 import re
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 from urllib.parse import urlparse
 from collections import Counter
 from dotenv import load_dotenv
@@ -75,16 +74,12 @@ def classify(name: str, email: str, website: str) -> str:
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
+    conn = db_connect()
     with conn.cursor() as cur:
         cur.execute(ALTER_SQL)
     conn.commit()
 
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor()
     cur.execute(
         """
         SELECT api_id, name, website, email_clean, telefon_clean

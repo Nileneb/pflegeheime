@@ -18,8 +18,7 @@ from __future__ import annotations
 
 import os
 import re
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 import dns.resolver
 import dns.exception
 from collections import defaultdict
@@ -53,16 +52,12 @@ def has_mx(domain: str) -> bool:
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
+    conn = db_connect()
     with conn.cursor() as cur:
         cur.execute(ALTER_SQL)
     conn.commit()
 
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor()
     cur.execute(
         """
         SELECT api_id, email_clean

@@ -9,8 +9,7 @@
 
 import os
 import re
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 from dotenv import load_dotenv
 
 from data_cleaner import PHONE_RE, EMAIL_RE, validate_cleaned
@@ -93,12 +92,8 @@ def fix_email(email: str) -> str:
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = db_connect()
+    cur = conn.cursor()
     cur.execute(
         """SELECT api_id, ort, telefon_clean, email_clean, adresse_clean,
                   geschaeftsfuehrung_clean, einrichtungsleitung_clean

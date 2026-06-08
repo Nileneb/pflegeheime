@@ -5,7 +5,7 @@ or via web search. No LLM, no inference — verified data only.
 """
 
 import os
-import psycopg2
+from data_cleaner import db_connect
 from dotenv import load_dotenv
 
 from data_cleaner import validate_cleaned
@@ -50,11 +50,7 @@ FIXES = [
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
+    conn = db_connect()
     cur = conn.cursor()
 
     fixed = flipped_ok = 0

@@ -6,8 +6,7 @@ rows were validated under the old rules and may also flip to suspect.
 """
 
 import os
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 from dotenv import load_dotenv
 
 from data_cleaner import validate_cleaned
@@ -23,8 +22,8 @@ DB_KW = dict(
 
 
 def main() -> None:
-    conn = psycopg2.connect(**DB_KW)
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = db_connect()
+    cur = conn.cursor()
     cur.execute(
         """
         SELECT api_id, name, ort, cleaner, quality,

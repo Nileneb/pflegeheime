@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS pflegeheime (
     name                TEXT,
     ort                 TEXT,
     kreis               TEXT,
-    lat                 DOUBLE PRECISION,
-    lon                 DOUBLE PRECISION,
+    lat                 REAL,
+    lon                 REAL,
     website             TEXT,
     impressum_url       TEXT,
     telefon             TEXT,
@@ -72,8 +72,8 @@ CREATE TABLE IF NOT EXISTS pflegeheime (
     einrichtungsleitung TEXT,
     status              TEXT,
     error_msg           TEXT,
-    cleaned             BOOLEAN DEFAULT FALSE,
-    cleaned_at          TIMESTAMPTZ,
+    cleaned             INTEGER DEFAULT 0,
+    cleaned_at          TEXT,
     telefon_clean       TEXT,
     email_clean         TEXT,
     adresse_clean       TEXT,
@@ -127,21 +127,13 @@ NO_DATA = "No clear Data"
 # DB helpers
 # ---------------------------------------------------------------------------
 def db_connect():
-    import psycopg2
-    return psycopg2.connect(
-        host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "pflegeheime"),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", ""),
-    )
+    from marktradar.db import db_connect as _c
+    return _c()
 
 
 def ensure_schema(conn):
-    with conn.cursor() as cur:
-        cur.execute(CREATE_TABLE_SQL)
-        cur.execute(ALTER_TABLE_SQL)
-    conn.commit()
+    from marktradar.db import bootstrap
+    bootstrap(conn._c if hasattr(conn, "_c") else conn)
 
 
 def table_empty(conn) -> bool:

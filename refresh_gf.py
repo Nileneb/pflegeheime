@@ -27,8 +27,7 @@ import re
 import json
 import time
 import requests
-import psycopg2
-import psycopg2.extras
+from data_cleaner import db_connect
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
@@ -309,16 +308,12 @@ def process_row(row: dict) -> dict:
 
 
 def main(workers: int = 6, limit: int | None = None) -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
+    conn = db_connect()
     with conn.cursor() as cur:
         cur.execute(ALTER_SQL)
     conn.commit()
 
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor()
     cur.execute(
         """
         SELECT api_id, name, ort, website, impressum_url

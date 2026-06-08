@@ -44,7 +44,7 @@ ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS ansprechpartner_api TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS typ_api             TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS nrw_key             TEXT;
 ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS detail_http_status  INT;
-ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS detail_fetched_at   TIMESTAMPTZ;
+ALTER TABLE pflegeheime ADD COLUMN IF NOT EXISTS detail_fetched_at   TEXT;
 """
 
 _local = threading.local()

@@ -1,8 +1,9 @@
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
-ddgs>=0.1
-psycopg2-binary>=2.9
-python-dotenv>=1.0
+feedparser>=6.0
 openpyxl>=3.1
 dnspython>=2.4
+sqlite-vec>=0.1.6
+mcp>=1.2
+pytest>=8.0

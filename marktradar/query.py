@@ -274,3 +274,80 @@ def discourse_topic(conn, topic: str) -> dict:
         "ORDER BY a.published DESC LIMIT 220", (topic,)).fetchall()]
     return {"topic": topic, "legend": legend, "items": items,
             "note": "Positionen via qwen aus echten Schlagzeilen destilliert; y = pro/contra"}
+
+
+def render_topic_svg(conn, topic: str, width: int = 920) -> str:
+    """Server-seitige SVG-Grafik der Diskurs-Positionen eines Themas (x=Zeit,
+    y=pro oben / contra unten, Farbe=Position). Pure Python, kein Browser — für das
+    MCP-Tool render_chart (Langdock-Integration)."""
+    import html as _h
+    from datetime import datetime, timezone
+    esc = lambda s: _h.escape(str(s if s is not None else ""))
+    d = discourse_topic(conn, topic)
+    legend = d["legend"]
+
+    def _ts(p):
+        try:
+            return datetime.fromisoformat(str(p).replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            return None
+    pts = sorted([(t, i) for i in d["items"] if (t := _ts(i.get("published")))], key=lambda x: x[0])
+    pad, rowH, top = 52, 16, 60
+    innerW = width - 2 * pad
+    if not pts:
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="120">'
+                f'<rect width="100%" height="100%" fill="#0a0e14"/>'
+                f'<text x="20" y="64" fill="#7a8290" font-family="monospace" font-size="13">'
+                f'{esc(topic)}: noch keine Positionen</text></svg>')
+    tmin, tmax = pts[0][0], pts[-1][0]
+    span = (tmax - tmin) or 1.0
+    gap = 0.014 * innerW
+    proX, conX, neuX, placed = [], [], [], []
+    proMax = conMax = 0
+    for t, i in pts:
+        x = pad + innerW * (t - tmin) / span
+        v = i.get("valence")
+        v = "pro" if v == "pro" else "contra" if v == "contra" else "neutral"
+        lanes = proX if v == "pro" else conX if v == "contra" else neuX
+        lane = 0
+        while lane < len(lanes) and x - lanes[lane] < gap:
+            lane += 1
+        if lane < len(lanes):
+            lanes[lane] = x
+        else:
+            lanes.append(x)
+        if v == "pro":
+            proMax = max(proMax, lane)
+        elif v == "contra":
+            conMax = max(conMax, lane)
+        placed.append((x, v, lane, i))
+    center = top + (proMax + 1) * rowH
+    height = int(center + (conMax + 1) * rowH + 44)
+    p = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="monospace">',
+         f'<rect width="100%" height="100%" fill="#0a0e14"/>',
+         f'<text x="{pad}" y="26" fill="#fff" font-size="15" font-weight="bold">{esc(topic)}</text>',
+         f'<text x="{pad}" y="44" fill="#5b8def" font-size="10">Positionen über Zeit · oben = pro · unten = contra</text>',
+         f'<line x1="{pad}" y1="{center:.0f}" x2="{width-pad}" y2="{center:.0f}" stroke="#46527a" stroke-width="1.5"/>']
+    seen = set()
+    for t, _ in pts:
+        dt = datetime.fromtimestamp(t, timezone.utc)
+        key = (dt.year, dt.month)
+        if key in seen:
+            continue
+        seen.add(key)
+        x = pad + innerW * (t - tmin) / span
+        p.append(f'<text x="{x:.0f}" y="{height-26}" fill="#5b6577" font-size="9" '
+                 f'text-anchor="middle">{dt.month:02d}/{str(dt.year)[2:]}</text>')
+    for x, v, lane, i in placed:
+        y = center - (lane + 1) * rowH if v == "pro" else center + (lane + 1) * rowH if v == "contra" else center - 8
+        col = i.get("color") or "#7a8290"
+        p.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{col}"/>')
+        p.append(f'<text x="{x+6:.1f}" y="{y+3:.1f}" fill="#cdd8e0" font-size="9">{esc(i.get("entity"))[:14]}</text>')
+    lx, ly = pad, height - 8
+    for pos in legend[:6]:
+        lbl = esc(pos["label"])[:22]
+        p.append(f'<rect x="{lx}" y="{ly-9}" width="9" height="9" fill="{pos.get("color") or "#7a8290"}"/>')
+        p.append(f'<text x="{lx+13}" y="{ly}" fill="#aeb8c6" font-size="9">{lbl}</text>')
+        lx += 32 + int(6.2 * len(lbl))
+    p.append("</svg>")
+    return "".join(p)

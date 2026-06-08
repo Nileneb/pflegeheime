@@ -1,5 +1,11 @@
-"""FastMCP-Server: Pflege-Marktradar. Tools delegieren an getestete Module."""
-from mcp.server.fastmcp import FastMCP
+"""FastMCP-Server: Pflege-Marktradar. Tools delegieren an getestete Module.
+
+Transport: stdio (default) oder streamable-http (für Langdock-Integration) via
+  PFLEGE_MCP_TRANSPORT=streamable-http PFLEGE_MCP_HOST=0.0.0.0 PFLEGE_MCP_PORT=8766
+"""
+import os
+
+from mcp.server.fastmcp import FastMCP, Image
 
 from marktradar import db, ingest, query
 
@@ -73,8 +79,28 @@ def list_entities(type: str | None = None, limit: int = 50) -> list[dict]:
     return query.list_entities(_conn, type, limit)
 
 
+@mcp.tool()
+def discourse_topics() -> list[str]:
+    """Themen mit synthetisierten Positionen (Eingabe für render_chart)."""
+    return query.discourse_topics(_conn)
+
+
+@mcp.tool()
+def render_chart(topic: str) -> Image:
+    """Rendert die Diskurs-Positionen eines Themas als SVG (x=Zeit, y=pro/contra,
+    Farbe=Position) — server-seitig, kein Browser. Themen via discourse_topics()."""
+    svg = query.render_topic_svg(_conn, topic)
+    return Image(data=svg.encode("utf-8"), format="svg+xml")
+
+
 def main():
-    mcp.run()
+    transport = os.getenv("PFLEGE_MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        mcp.settings.host = os.getenv("PFLEGE_MCP_HOST", "127.0.0.1")
+        mcp.settings.port = int(os.getenv("PFLEGE_MCP_PORT", "8766"))
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

@@ -87,3 +87,29 @@ def test_discourse_topic_legend_and_items(conn, monkeypatch):
     assert any(p["label"] == "Mehr Personal" for p in d["legend"])
     assert any(it["entity"] == "CDU" and it["valence"] == "pro" and
                it["position"] == "Mehr Personal" for it in d["items"])
+
+
+def test_render_topic_svg(conn):
+    from marktradar import query
+    conn.execute("INSERT INTO sources(name,type,url) VALUES('s','rss','http://x')")
+    conn.execute("INSERT INTO entities(name,type) VALUES('CDU','partei')")
+    eid = conn.execute("SELECT id FROM entities WHERE name='CDU'").fetchone()["id"]
+    conn.execute("INSERT INTO articles(source_id,guid,title,link,published) "
+                 "VALUES(1,'g','Reform-Titel','http://x/1','2026-06-01T08:00:00+00:00')")
+    aid = conn.execute("SELECT id FROM articles").fetchone()["id"]
+    conn.execute("INSERT INTO topic_positions(topic,label,valence,color,ord) "
+                 "VALUES('Pflegereform','Mehr Personal','pro','#5b8def',0)")
+    conn.execute("INSERT INTO article_topics(article_id,topic,stance,valence,position) "
+                 "VALUES(?,?,?,?,?)", (aid, 'Pflegereform', 'pro', 'pro', 'Mehr Personal'))
+    conn.execute("INSERT INTO article_entities(article_id,entity_id,method) "
+                 "VALUES(?,?,'alias')", (aid, eid))
+    conn.commit()
+    svg = query.render_topic_svg(conn, 'Pflegereform')
+    assert svg.startswith('<svg') and '</svg>' in svg
+    assert 'CDU' in svg and '<circle' in svg and 'Mehr Personal' in svg
+
+
+def test_render_topic_svg_empty(conn):
+    from marktradar import query
+    svg = query.render_topic_svg(conn, 'Pflegereform')
+    assert '<svg' in svg and 'noch keine Positionen' in svg

@@ -39,36 +39,70 @@ def geocode(query):
     return None
 
 
+def _match_heim(conn, name):
+    """Fuzzy-Match einer Org-Einrichtung gegen die pflegeheime-Liste → (adresse, ort).
+    Nutzt die ECHTEN Adressen aus der Liste statt nur des Namens fürs Geocoding."""
+    base = name
+    for pre in ("Tagespflege ", "Service Wohnen "):
+        if base.startswith(pre):
+            base = base[len(pre):]
+    cands = [name, base, name.split("/")[0].strip(),
+             base.replace("Haus ", "").replace("Diakoniezentrum ", "")]
+    for c in dict.fromkeys(x.strip() for x in cands):  # dedupe, Reihenfolge erhalten
+        if len(c) < 5:
+            continue
+        r = conn.execute(
+            "SELECT adresse, ort FROM pflegeheime WHERE name LIKE ? "
+            "AND adresse IS NOT NULL AND adresse!='' ORDER BY length(name) LIMIT 1",
+            (f"%{c}%",)).fetchone()
+        if r:
+            return r["adresse"], r["ort"]
+    return None
+
+
 def geocode_units(conn, traeger="Bergische Diakonie", limit=None):
     """Geokodiert noch nicht verortete Einrichtungen (type='einrichtung') des Trägers.
-    Nominatim-Policy: max 1 req/s. Fallback = Träger-Zentrum mit Streuung."""
+    Reihenfolge: echte Adresse aus pflegeheime-Liste → Name+Träger → Träger-Zentrum.
+    Nominatim-Policy: max 1 req/s."""
     rows = conn.execute(
         "SELECT id,name FROM org_units WHERE traeger=? AND type='einrichtung' "
         "AND (lat IS NULL OR lon IS NULL) AND active=1", (traeger,)).fetchall()
     if limit:
         rows = rows[:limit]
     center = TRAEGER_CENTER.get(traeger)
-    done, fell_back = 0, 0
-    for i, r in enumerate(rows):
-        ll = None
-        try:
-            ll = geocode(f"{r['name']}, {traeger}, Deutschland")
-        except Exception:
-            ll = None
-        if ll is None and center:
-            # gestreut um das Träger-Zentrum, damit die Häuser nicht exakt überlappen
+    done, from_list, fell_back = 0, 0, 0
+    for r in rows:
+        ll, addr = None, None
+        heim = _match_heim(conn, r["name"])
+        if heim:  # echte Adresse aus der Liste
+            try:
+                ll = geocode(f"{heim[0]}, {heim[1] or ''}, Deutschland")
+                addr = f"{heim[0]}, {heim[1] or ''}".strip(", ")
+                if ll:
+                    from_list += 1
+            except Exception:
+                ll = None
+            time.sleep(1.05)
+        if ll is None:  # Fallback: Name + Träger
+            try:
+                ll = geocode(f"{r['name']}, {traeger}, Deutschland")
+                if ll:
+                    addr = addr or ll[2]
+            except Exception:
+                ll = None
+            time.sleep(1.05)
+        if ll is None and center:  # letzter Fallback: Träger-Zentrum, gestreut
             h = abs(hash(r["name"]))
-            lat = center[0] + ((h % 100) / 100 - 0.5) * 0.03
-            lon = center[1] + (((h // 100) % 100) / 100 - 0.5) * 0.05
-            ll = (lat, lon, None)
+            ll = (center[0] + ((h % 100) / 100 - 0.5) * 0.03,
+                  center[1] + (((h // 100) % 100) / 100 - 0.5) * 0.05, None)
             fell_back += 1
         if ll:
-            conn.execute("UPDATE org_units SET lat=?, lon=?, address=COALESCE(address,?) WHERE id=?",
-                         (ll[0], ll[1], ll[2], r["id"]))
+            conn.execute("UPDATE org_units SET lat=?, lon=?, address=COALESCE(?,address) WHERE id=?",
+                         (ll[0], ll[1], addr, r["id"]))
             done += 1
-        time.sleep(1.05)  # Nominatim rate-limit
     conn.commit()
-    return {"geocoded": done, "fallback": fell_back, "remaining": len(rows) - done}
+    return {"geocoded": done, "from_list": from_list, "fallback": fell_back,
+            "remaining": len(rows) - done}
 
 
 def _height(tags):

@@ -66,7 +66,12 @@ if auth.PUBLIC_KEY:  # Prod: OAuth-Resource-Server aktiv
         ),
     )
 
-mcp = FastMCP("pflege-marktradar", transport_security=_TRANSPORT_SECURITY, **_auth_kwargs)
+# WHY: stateless_http → jede Request self-contained, keine Mcp-Session-Id-Affinität.
+# Hinter Proxies (Synology), die Session-/Auth-Header strippen, sonst „Created new
+# transport" pro Call → Session verloren → Langdock bricht ab. Tools sind zustandslos.
+_STATELESS = os.getenv("PFLEGE_STATELESS", "1") == "1"
+mcp = FastMCP("pflege-marktradar", transport_security=_TRANSPORT_SECURITY,
+              stateless_http=_STATELESS, **_auth_kwargs)
 _conn = db.connect()
 db.bootstrap(_conn)
 

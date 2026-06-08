@@ -3,6 +3,7 @@ deterministisches Wortgrenzen-Alias-Tagging Artikel→Entität, Keyword-Event-
 Klassifikation und LLM-Stance pro Thema (Diskurs). NER-Extraktion ist als spätere
 Stufe vorgesehen (Spalten entities.source / article_entities.method tragen dafür 'ner')."""
 import json
+import os
 import re
 
 import requests
@@ -10,7 +11,7 @@ import requests
 from marktradar import embeddings
 
 OLLAMA_HOST = embeddings.OLLAMA_HOST
-STANCE_MODEL = "qwen3.5:9b"
+STANCE_MODEL = os.getenv("CHAT_MODEL", "qwen3.5:9b")
 
 # Kuratierte große Betreiber/Träger (canonical, [aliases])
 SEED_TRAEGER = [
@@ -250,7 +251,7 @@ def synthesize_positions(conn, sample: int = 40, min_hits: int = 3) -> dict:
                            {"role": "user", "content":
                             f"Thema: {topic}\nSchlagzeilen:\n" + "\n".join(f"- {h}" for h in hits)[:4000]}],
                        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 300}}
-            r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=120)
+            r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload, headers=embeddings.chat_headers(), timeout=120)
             r.raise_for_status()
             data = json.loads(r.json().get("message", {}).get("content", "") or "{}")
             positions = data if isinstance(data, list) else data.get("positionen") or data.get("positions") or []
@@ -306,7 +307,7 @@ def classify_topics(conn, article_ids=None) -> dict:
                             f"Positionen je Thema:\n{plist}\n\nTitel: {a['title']}\n"
                             f"Text: {a['summary'] or ''}"[:1800]}],
                        "options": {"temperature": 0.0, "num_ctx": 4096, "num_predict": 220}}
-            r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=90)
+            r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload, headers=embeddings.chat_headers(), timeout=90)
             r.raise_for_status()
             d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
         except Exception:

@@ -1,0 +1,13 @@
+.git
+.github
+.pytest_cache
+__pycache__
+*/__pycache__
+tests
+docs
+*.xlsx
+out/*.xlsx
+scraper.log
+.venv
+pflege.db-wal
+pflege.db-shm

@@ -10,3 +10,6 @@ pflege.db-wal
 pflege.db-shm
 .pytest_cache/
 
+
+# baked DB-Seed (lokal, nicht versioniert)
+docker/seed/pflege.db

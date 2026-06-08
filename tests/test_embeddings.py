@@ -8,7 +8,7 @@ def test_embed_returns_configured_dim(monkeypatch):
         def raise_for_status(self): pass
         def json(self): return {"embedding": [0.5] * embeddings.EMBED_DIM}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["url"] = url
         captured["model"] = json["model"]
         return FakeResp()

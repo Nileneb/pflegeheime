@@ -1,5 +1,6 @@
 """RSS-Ingest: holen, parsen, diffen, embedden, klassifizieren (SQLite-Pfad)."""
 import json
+import os
 import re
 from datetime import datetime, timezone
 
@@ -15,7 +16,7 @@ from sqlite_vec import serialize_float32
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OLLAMA_HOST = embeddings.OLLAMA_HOST
-RELEVANCE_MODEL = "qwen3.5:9b"
+RELEVANCE_MODEL = os.getenv("CHAT_MODEL", "qwen3.5:9b")
 HEADERS = {"User-Agent": "pflege-marktradar/0.1 (+research; contact: benedikt.linn@code.berlin)",
            "Accept-Language": "de-DE,de;q=0.9"}
 TIMEOUT = 12
@@ -80,7 +81,8 @@ def classify(title: str, summary: str) -> tuple:
                "messages": [{"role": "system", "content": SYSTEM},
                             {"role": "user", "content": f"Titel: {title}\nText: {summary}"[:1500]}],
                "options": {"temperature": 0.0, "num_ctx": 2048, "num_predict": 120}}
-    r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=90)
+    r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload,
+                      headers=embeddings.chat_headers(), timeout=90)
     r.raise_for_status()
     d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
     return bool(d.get("relevant")), (d.get("kategorie") or "")[:60], (d.get("grund") or "")[:200]

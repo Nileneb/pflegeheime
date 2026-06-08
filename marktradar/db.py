@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS article_entities (
     PRIMARY KEY (article_id, entity_id)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS org_units (
+    id INTEGER PRIMARY KEY, traeger TEXT, name TEXT NOT NULL, short_name TEXT,
+    parent_id INTEGER, level INTEGER, type TEXT, color TEXT, icon TEXT,
+    sort_order INTEGER DEFAULT 0, website_url TEXT, description TEXT, active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS org_persons (
+    id INTEGER PRIMARY KEY, traeger TEXT, first_name TEXT, last_name TEXT, email TEXT,
+    role TEXT, unit_id INTEGER REFERENCES org_units(id), type TEXT, active INTEGER DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS article_topics (
     article_id INTEGER REFERENCES articles(id),
     topic TEXT NOT NULL,

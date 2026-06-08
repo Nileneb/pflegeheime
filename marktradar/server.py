@@ -17,7 +17,15 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
-from marktradar import auth, db, ingest, query
+from marktradar import auth, db, ingest, organigram, query
+
+INSTRUCTIONS = (
+    "Pflege-Marktradar — Markt-Intelligence für den deutschen Pflegemarkt "
+    "(News, Diskurs-Positionen, Entitäten, Organigramm). "
+    "QUELLENANGABE (wichtig): Jede Meldung/Position trägt ein `link`-Feld mit der "
+    "ORIGINAL-URL und `source_domain`. Zitiere als Quelle IMMER diese `link`-URL "
+    "(bzw. source_domain) — NIEMALS den Tool-Call-Namen oder eine call_*.json-Referenz."
+)
 
 OAUTH_ISSUER = os.getenv("PFLEGE_OAUTH_ISSUER", "https://app.linn.games")
 PUBLIC_URL = os.getenv("PFLEGE_PUBLIC_URL", "https://pflege.linn.games")
@@ -70,10 +78,12 @@ if auth.PUBLIC_KEY:  # Prod: OAuth-Resource-Server aktiv
 # Hinter Proxies (Synology), die Session-/Auth-Header strippen, sonst „Created new
 # transport" pro Call → Session verloren → Langdock bricht ab. Tools sind zustandslos.
 _STATELESS = os.getenv("PFLEGE_STATELESS", "1") == "1"
-mcp = FastMCP("pflege-marktradar", transport_security=_TRANSPORT_SECURITY,
+mcp = FastMCP("pflege-marktradar", instructions=INSTRUCTIONS,
+              transport_security=_TRANSPORT_SECURITY,
               stateless_http=_STATELESS, **_auth_kwargs)
 _conn = db.connect()
 db.bootstrap(_conn)
+organigram.seed(_conn)  # Bergische-Diakonie-Organigramm (idempotent)
 
 
 @mcp.tool()
@@ -153,6 +163,41 @@ def render_chart(topic: str) -> Image:
     Farbe=Position) — server-seitig, kein Browser. Themen via discourse_topics()."""
     svg = query.render_topic_svg(_conn, topic)
     return Image(data=svg.encode("utf-8"), format="svg+xml")
+
+
+@mcp.tool()
+def org_tree(traeger: str = "Bergische Diakonie") -> list[dict]:
+    """Verschachtelter Organigramm-Baum eines Trägers (Sektoren → Bereiche →
+    Einrichtungen), inkl. Icon/Farbe je Einheit."""
+    return organigram.tree(_conn, traeger)
+
+
+@mcp.tool()
+def org_persons(unit_id: int | None = None, traeger: str = "Bergische Diakonie") -> list[dict]:
+    """Personen eines Trägers; mit unit_id rekursiv inkl. aller Untereinheiten."""
+    return organigram.persons(_conn, unit_id, traeger)
+
+
+@mcp.tool()
+def org_stats(traeger: str = "Bergische Diakonie") -> dict:
+    """Kennzahlen der Org-Struktur: Einheiten, Einrichtungen, Personen."""
+    return organigram.stats(_conn, traeger)
+
+
+@mcp.tool()
+def add_org_unit(name: str, parent_id: int | None = None, type: str = "bereich",
+                 traeger: str = "Bergische Diakonie", short_name: str | None = None) -> dict:
+    """Legt eine neue Org-Einheit unter parent_id an (level wird abgeleitet)."""
+    return organigram.add_unit(_conn, name, parent_id, type, traeger, short_name)
+
+
+@mcp.tool()
+def add_org_person(first_name: str, last_name: str, role: str | None = None,
+                   unit_id: int | None = None, email: str | None = None,
+                   traeger: str = "Bergische Diakonie") -> dict:
+    """Fügt eine Person einer Org-Einheit hinzu."""
+    return organigram.add_person(_conn, first_name, last_name, role, unit_id, email,
+                                 traeger=traeger)
 
 
 def main():

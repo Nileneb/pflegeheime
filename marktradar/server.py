@@ -25,13 +25,14 @@ class _JWTVerifier(TokenVerifier):
         claims = auth.verify(token)
         if claims is None:
             return None
-        scope = claims.get("scope") or ""
+        raw = claims.get("scope") or claims.get("scopes") or []
+        scopes = raw.split() if isinstance(raw, str) else list(raw)
         return AccessToken(
             token=token,
             client_id=str(claims.get("client_id") or claims.get("sub") or "unknown"),
-            scopes=scope.split() if scope else [],
+            scopes=scopes,
             expires_at=claims.get("exp"),
-            resource=auth.AUDIENCE,
+            resource=auth.AUDIENCE or None,
         )
 
 

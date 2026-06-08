@@ -138,6 +138,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
+            elif u.path == "/api/hashtags/_debug_extract":
+                _json(self, hashtags.debug_extract(conn, int(q.get("n", ["3"])[0])))
             elif u.path == "/api/org/scene":
                 _json(self, geo.scene(conn, int(q.get("id", ["0"])[0]),
                                       int(q.get("radius", ["320"])[0]),

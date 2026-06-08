@@ -281,9 +281,48 @@ def _extract_hashtags(title, summary):
                   "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 400}}, timeout=90)
         r.raise_for_status()
         msg = r.json().get("message", {}) or {}
-        return _parse_terms(msg.get("content")) or _parse_terms(msg.get("thinking"))
+        content = msg.get("content")
+        # WHY: ein nicht-leeres content ist autoritativ — auch "[]" (= bewusst keine
+        # Themen). Nur wenn der content-Channel KOMPLETT leer ist (Reasoning-Modell
+        # ohne Budget), auf thinking ausweichen; sonst fischt der Regex das im
+        # thinking zitierte System-Prompt-Beispiel und erfindet falsche Hashtags.
+        if content and content.strip():
+            return _parse_terms(content)
+        return _parse_terms(msg.get("thinking"))
     except Exception:
         return []
+
+
+def debug_extract(conn, n=3):
+    """Diagnose: zeigt für die ersten n relevanten, ungetaggten Artikel die rohe
+    LLM-Antwort (content + thinking) und die geparsten Terme — KEIN Error-Swallow."""
+    from marktradar import embeddings
+    rows = conn.execute(
+        "SELECT id,title,summary,relevant FROM articles "
+        "WHERE id NOT IN (SELECT article_id FROM article_hashtags) "
+        "ORDER BY relevant DESC, published DESC LIMIT ?", (n,)).fetchall()
+    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
+    out = {"host": embeddings.CHAT_HOST, "model": model, "items": []}
+    for a in rows:
+        item = {"id": a["id"], "title": a["title"], "relevant": a["relevant"]}
+        try:
+            r = requests.post(
+                f"{embeddings.CHAT_HOST}/api/chat", headers=embeddings.chat_headers(),
+                json={"model": model, "format": "json", "stream": False, "think": False,
+                      "messages": [{"role": "system", "content": _EXTRACT_SYS},
+                                   {"role": "user", "content": f"Titel: {a['title']}\nText: {a['summary'] or ''}"[:1200]}],
+                      "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 400}}, timeout=90)
+            item["status"] = r.status_code
+            msg = (r.json().get("message") or {})
+            content = msg.get("content")
+            item["content"] = (content or "")[:400]
+            item["thinking"] = (msg.get("thinking") or "")[:400]
+            item["terms"] = (_parse_terms(content) if content and content.strip()
+                             else _parse_terms(msg.get("thinking")))
+        except Exception as e:
+            item["error"] = f"{type(e).__name__}: {e}"
+        out["items"].append(item)
+    return out
 
 
 def tag_articles(conn, article_ids=None, auto_create=False, limit=400):

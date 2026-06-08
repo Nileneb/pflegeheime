@@ -136,9 +136,9 @@ def _roof(tags):
 
 def buildings(lat, lon, radius=320):
     """Echte OSM-Gebäude (inkl. building:part) im Umkreis, mit Höhe/Dach/Farbe."""
-    # building:part erst wieder rein, wenn der 3D-Renderer Dächer/min_height voll abbildet
-    # (sonst überlappen Parts flach mit dem Hauptgebäude).
-    ql = (f"[out:json][timeout:25];(way[\"building\"](around:{radius},{lat},{lon}););out geom;")
+    ql = (f"[out:json][timeout:25];("
+          f"way[\"building\"](around:{radius},{lat},{lon});"
+          f"way[\"building:part\"](around:{radius},{lat},{lon}););out geom;")
     data = urllib.parse.urlencode({"data": ql}).encode()
     res, last = None, None
     for ep in OVERPASS_ENDPOINTS:

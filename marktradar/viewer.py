@@ -839,24 +839,34 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
   scene.add(new THREE.HemisphereLight(0xbfd4ff,0x202830,0.95));
   const sun=new THREE.DirectionalLight(0xfff3da,1.0);sun.position.set(120,220,80);scene.add(sun);
   const lat0=d.center.lat,lon0=d.center.lon,mats=[];const focalKey=(d.name||'').toLowerCase();
-  d.buildings.forEach(b=>{const shp=new THREE.Shape();let ok=true;
-    b.coords.forEach((c,i)=>{const [x,z]=projXY(c[0],c[1],lat0,lon0);if(!isFinite(x)||!isFinite(z))ok=false;i?shp.lineTo(x,z):shp.moveTo(x,z);});
-    if(!ok)return;const base=Math.max(0,b.min_height||0),top=Math.max(base+2,b.height||9);
-    let g;try{g=new THREE.ExtrudeGeometry(shp,{depth:top-base,bevelEnabled:false});}catch(e){return;}
-    g.rotateX(-Math.PI/2);if(base>0)g.translate(0,base,0);
+  d.buildings.forEach(b=>{const pts=[];let ok=true;
+    b.coords.forEach(c=>{const [x,z]=projXY(c[0],c[1],lat0,lon0);if(!isFinite(x)||!isFinite(z))ok=false;else pts.push([x,z]);});
+    if(!ok||pts.length<3)return;
+    const shp=new THREE.Shape();pts.forEach((p,i)=>i?shp.lineTo(p[0],p[1]):shp.moveTo(p[0],p[1]));
+    const baseY=Math.max(0,b.min_height||0),totalH=Math.max(baseY+2,b.height||9);
+    let roofH=b.roof_height||0;const tagged=b.roof_shape&&b.roof_shape!=='flat';
+    if(!tagged&&roofH===0&&(totalH-baseY)<15)roofH=Math.min(3,(totalH-baseY)*0.32);  // Default-Walmdach für Häuser
+    roofH=Math.min(roofH,(totalH-baseY)*0.6);const wallTop=totalH-roofH;
     let bcol=0x8590a6;if(b.colour){try{bcol=new THREE.Color(b.colour).getHex();}catch(e){}}
-    const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:bcol,roughness:0.92}));
-    m.userData.focal=!!(b.name&&focalKey&&(b.name.toLowerCase().includes(focalKey)||focalKey.includes(b.name.toLowerCase())));
-    m.userData.bcol=bcol;scene.add(m);mats.push(m);});
+    let rcol=0x7a5246;if(b.roof_colour){try{rcol=new THREE.Color(b.roof_colour).getHex();}catch(e){}}
+    const grp=new THREE.Group();let wg;
+    try{wg=new THREE.ExtrudeGeometry(shp,{depth:wallTop-baseY,bevelEnabled:false});}catch(e){return;}
+    wg.rotateX(-Math.PI/2);if(baseY>0)wg.translate(0,baseY,0);grp.add(new THREE.Mesh(wg));
+    if(roofH>0.4){let cx=0,cz=0;pts.forEach(p=>{cx+=p[0];cz+=p[1];});cx/=pts.length;cz/=pts.length;
+      const po=[];for(let i=0;i<pts.length;i++){const a=pts[i],q=pts[(i+1)%pts.length];po.push(a[0],wallTop,a[1],q[0],wallTop,q[1],cx,wallTop+roofH,cz);}
+      const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(po,3));rg.computeVertexNormals();
+      const rm=new THREE.Mesh(rg);grp.add(rm);grp.userData.roofMesh=rm;}
+    grp.userData.focal=!!(b.name&&focalKey&&(b.name.toLowerCase().includes(focalKey)||focalKey.includes(b.name.toLowerCase())));
+    grp.userData.bcol=bcol;grp.userData.rcol=rcol;scene.add(grp);mats.push(grp);});
   // Stil-Presets
   function applyStyle(name){document.querySelectorAll('.scbtn').forEach(x=>x.classList.toggle('on',x.dataset.st===name));
-    let bg,fog,gc,mk;
-    if(name==='neon'){bg=0x05030f;fog=[0x05030f,60,800];gc=0x0a0618;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffe24d:0x00ffd0,wireframe:true});}
-    else if(name==='toon'){bg=0xcfe7ff;fog=[0xcfe7ff,200,1600];gc=0x7da35a;mk=b=>new THREE.MeshToonMaterial({color:b.userData.focal?0xffb347:0xb7c7dd});}
-    else if(name==='blueprint'){bg=0x0a1a3a;fog=[0x0a1a3a,100,1300];gc=0x06122a;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffd24d:0x66ccff,wireframe:true});}
-    else{bg=0x9fb6d4;fog=[0x9fb6d4,250,1800];gc=0x2a3340;mk=b=>new THREE.MeshStandardMaterial({color:b.userData.focal?0xffcc44:(b.userData.bcol||0x8590a6),roughness:0.92});}
+    let bg,fog,gc,mk;  // mk(group, isRoof) → Material (Wand vs Dach)
+    if(name==='neon'){bg=0x05030f;fog=[0x05030f,60,800];gc=0x0a0618;mk=(g,rf)=>new THREE.MeshBasicMaterial({color:g.userData.focal?(rf?0xffb84d:0xffe24d):(rf?0xff6ec7:0x00ffd0),wireframe:true});}
+    else if(name==='toon'){bg=0xcfe7ff;fog=[0xcfe7ff,200,1600];gc=0x7da35a;mk=(g,rf)=>new THREE.MeshToonMaterial({color:g.userData.focal?(rf?0xe07a3a:0xffb347):(rf?0x9c6b52:0xb7c7dd)});}
+    else if(name==='blueprint'){bg=0x0a1a3a;fog=[0x0a1a3a,100,1300];gc=0x06122a;mk=(g,rf)=>new THREE.MeshBasicMaterial({color:g.userData.focal?0xffd24d:0x66ccff,wireframe:true});}
+    else{bg=0x9fb6d4;fog=[0x9fb6d4,250,1800];gc=0x2a3340;mk=(g,rf)=>new THREE.MeshStandardMaterial({color:g.userData.focal?(rf?0xd49a3a:0xffcc44):(rf?(g.userData.rcol||0x7a5246):(g.userData.bcol||0x8590a6)),roughness:0.9});}
     scene.background=new THREE.Color(bg);scene.fog=new THREE.Fog(fog[0],fog[1],fog[2]);ground.material.color.set(gc);
-    mats.forEach(m=>{m.material.dispose();m.material=mk(m);});}
+    mats.forEach(g=>g.children.forEach(ch=>{if(ch.isMesh){if(ch.material&&ch.material.dispose)ch.material.dispose();ch.material=mk(g,ch===g.userData.roofMesh);}}));}
   const keys={},kd=e=>{keys[e.code]=true;if(['1','2','3','4'].includes(e.key))applyStyle(['real','neon','toon','blueprint'][+e.key-1]);},ku=e=>{keys[e.code]=false;};
   document.addEventListener('keydown',kd);document.addEventListener('keyup',ku);
   el.onclick=()=>controls.lock();
@@ -880,10 +890,13 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
 function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
   const foc=H.focal,box=new THREE.Box3().setFromObject(foc),c=box.getCenter(new THREE.Vector3()),sz=box.getSize(new THREE.Vector3());
   const r=Math.max(sz.x,sz.z)*1.7+sz.y*0.8+8;
-  const hidden=[];H.scene.traverse(o=>{if(o.isMesh&&o!==foc){hidden.push([o,o.visible]);o.visible=false;}});
-  const oBg=H.scene.background,oFog=H.scene.fog,oW=H.renderer.domElement.width,oH=H.renderer.domElement.height,oMat=foc.material;
+  const isUnder=o=>{let p=o;while(p){if(p===foc)return true;p=p.parent;}return false;};
+  const hidden=[];H.scene.traverse(o=>{if(o.isMesh&&!isUnder(o)){hidden.push([o,o.visible]);o.visible=false;}});
+  const oBg=H.scene.background,oFog=H.scene.fog,oW=H.renderer.domElement.width,oH=H.renderer.domElement.height;
   H.scene.background=new THREE.Color(0xdde3ec);H.scene.fog=null;
-  foc.material=new THREE.MeshStandardMaterial({color:0x97a1b0,roughness:0.85,metalness:0.04});
+  // neutrale Capture-Materialien aufs Fokus-Gebäude (Wand hell, Dach dunkler → Form klar)
+  const oMats=[];foc.traverse(o=>{if(o.isMesh){oMats.push([o,o.material]);const rf=o===foc.userData.roofMesh;
+    o.material=new THREE.MeshStandardMaterial({color:rf?0x7a8290:0x97a1b0,roughness:0.85,metalness:0.04});}});
   // Eigenes, gedämpftes Licht nur für den Capture → klare Flächen-Schattierung (Form für Meshy).
   const capLights=new THREE.Group();
   capLights.add(new THREE.AmbientLight(0xffffff,0.38));
@@ -895,7 +908,7 @@ function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
     cam.position.set(c.x+r*Math.cos(rad),c.y+sz.y*0.55+r*0.3,c.z+r*Math.sin(rad));cam.lookAt(c.x,c.y+sz.y*0.35,c.z);
     H.renderer.render(H.scene,cam);imgs.push(H.renderer.domElement.toDataURL('image/jpeg',0.92));});
   H.scene.remove(capLights);
-  foc.material=oMat;H.scene.background=oBg;H.scene.fog=oFog;hidden.forEach(([o,v])=>o.visible=v);H.renderer.setSize(oW,oH,false);
+  oMats.forEach(([o,mm])=>o.material=mm);H.scene.background=oBg;H.scene.fog=oFog;hidden.forEach(([o,v])=>o.visible=v);H.renderer.setSize(oW,oH,false);
   return imgs;}
 let RKIMGS=[],RKMODE='osm',RKSEL=[];
 function setRkMode(m){RKMODE=m;$('rkmode_osm').classList.toggle('on',m==='osm');$('rkmode_photo').classList.toggle('on',m==='photo');

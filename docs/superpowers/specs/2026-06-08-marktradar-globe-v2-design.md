@@ -104,3 +104,59 @@ aber Ollama-Chat (Cloud, `CHAT_HOST`) ist bereits angebunden.
 - Kein echtes ethnolinguistisches Sprachareal-Dataset (wäre Overkill) — Länder-GeoJSON
   + Blur ist die bewusste „cool+nützlich"-Näherung.
 - Arc-Cap 120 — sehr dichte Netze werden begrenzt (geloggt, nicht lautlos).
+
+---
+
+# v2.1 — Internationale Quellen + Cross-Language-Netz + Auto-Refill (2026-06-08)
+
+## Problem
+Globe zeigt nur einen Blink-Blob auf Deutschland: alle Quellen sind deutsch
+(`fetch_news` hardcoded `hl=de&gl=DE&ceid=DE:de` `hashtags.py:157`; ungelöste Orte →
+immer `DE_CENTER` `hashtags.py:78,395`; Social-Fetcher suchen nur den deutschen Term).
+Kein weltumspannendes Netz. Kein Scheduler (Refresh 100% manuell).
+
+## Entscheidungen (User)
+- **Fetch-Breite:** ~12 Top-Sprachen (Overlay/Tooltip bleiben bei 40).
+- **Netz:** BEIDES — Konzept-über-Regionen (Basis) + Cluster-Set-Matching (semantisch).
+- **Refill:** In-Container Background-Thread, ~20-30 min.
+
+## Konstanten (`languages.py`)
+- `FETCH_LANGS = ["en","es","fr","pt","ar","ru","it","nl","pl","tr","uk","ja"]` (⊆ LANGUAGES).
+- `NEWS_REGION = {en:US, es:ES, fr:FR, pt:BR, ar:SA, ru:RU, it:IT, nl:NL, pl:PL, tr:TR, uk:UA, ja:JP}`
+  (hl=lang, gl=region, ceid=region:lang für Google News).
+
+## T1 — Multilinguales Fetchen (`db.py`, `hashtags.py`)
+- **Schema:** `hashtag_posts` + Spalten `lang_code TEXT`, `country TEXT` (idempotente ALTER-Migration
+  via PRAGMA table_info-Guard; läuft beim Container-Start auf der bestehenden Prod-DB).
+- **`refresh()`** (`hashtags.py:377`): pro Hashtag zuerst `ensure_translations`, dann pro
+  `lang ∈ ['de']+FETCH_LANGS` jeden Fetcher mit dem ÜBERSETZTEN Term + Sprach-/Region-Params;
+  Post unter der KANONISCHEN `hashtag_id` speichern (gleiches Konzept), plus `lang_code`+`country`.
+  Gestaffelt (kleine Pause) gegen Rate-Limit; Fehler pro (lang,source) gesammelt, NICHT geschluckt.
+- **Fetcher:** `fetch_news(term,limit,lang,region)` baut hl/gl/ceid aus NEWS_REGION; bluesky `lang`-Param;
+  mastodon nutzt den übersetzten Tag.
+- **Geolokalisierung:** wenn `location_text` nicht auflöst → Jitter um `languages.by_code(lang).centroid`
+  (statt immer DE_CENTER) → Posts streuen nach Fetch-Sprache über den Globus.
+
+## T2 — Cross-Language-Netz (`hashtags.py` → `map_data`)
+Neues Feld `connections` (explizite Endpunkte, nicht Term-Paare): `[{a_lat,a_lon,b_lat,b_lon,color,n,kind}]`.
+- **Konzept-über-Regionen (kind=concept):** pro Hashtag Posts nach Region (country/lang) gruppieren,
+  Centroid je Region; Arcs verbinden die Regional-Centroiden DESSELBEN Hashtags (Mesh, Cap je Hashtag).
+- **Cluster-Set-Matching (kind=cluster):** Ko-Vorkommen-Cluster (Gruppen gemeinsam auftretender Hashtags)
+  erkennen; erscheint dasselbe Cluster in ≥2 Sprach-Regionen → Arc zwischen deren Centroiden (stärkeres Gewicht).
+- Cap gesamt (z.B. 200), nach `n` sortiert, Überschuss signalisiert (nicht lautlos).
+
+## T3 — Frontend (`viewer.py`)
+- Arc-Renderer (aus T2/v2) erweitern: konsumiert `HTDATA.connections` (explizite Endpunkte) zusätzlich/statt
+  `trends`-Term-Paare. Farbe nach `kind` (concept vs cluster), Wander-Glow ∝ `n`. Marker bleiben ruhig.
+- Backward-kompatibel falls `connections` leer (fällt auf trends-Arcs zurück).
+
+## T4 — Auto-Refill (`server.py`, im mcp-pflege-Container)
+- Daemon-Thread im MCP-Server: alle `PFLEGE_REFRESH_INTERVAL` (default 1500s) `hashtags.refresh(...)`
+  über alle Sprachen. NUR im Server-Container (nicht im Viewer) → kein Doppel-Fetch. Via Env an/abschaltbar
+  (`PFLEGE_AUTO_REFRESH=1`). Fehler geloggt, Loop überlebt Einzelfehler.
+
+## Verifikation
+- pytest: Migration idempotent; refresh nutzt Übersetzungen + setzt lang_code/country; geolocation-Fallback
+  je Sprache; `connections` (concept+cluster) Shape + Cap. Chat/HTTP gemockt.
+- Deploy + EIN sofortiger multilingualer Refresh → Posts in mehreren Ländern, `connections` nicht leer,
+  Globe zeigt Netz (Screenshot). Auto-Refresh-Thread im mcp-pflege-Log sichtbar.

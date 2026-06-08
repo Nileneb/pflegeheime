@@ -238,8 +238,7 @@ def main():
     cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS websearch_gf (
                      api_id TEXT PRIMARY KEY, gf TEXT, source_url TEXT,
-                     method TEXT, status TEXT, quelltext TEXT, done_at TIMESTAMPTZ DEFAULT NOW())""")
-    cur.execute("ALTER TABLE websearch_gf ADD COLUMN IF NOT EXISTS quelltext TEXT")
+                     method TEXT, status TEXT, quelltext TEXT, done_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.commit()
 
     # load domain cache

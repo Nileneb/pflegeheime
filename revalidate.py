@@ -6,25 +6,16 @@ rows were validated under the old rules and may also flip to suspect.
 """
 
 import os
-import psycopg2
-import psycopg2.extras
 from dotenv import load_dotenv
 
-from data_cleaner import validate_cleaned
+from data_cleaner import db_connect, validate_cleaned
 from fix_suspects import normalize_ort
 
 load_dotenv()
 
-DB_KW = dict(
-    host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-    dbname=os.getenv("PGDATABASE"),
-    user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-)
-
-
 def main() -> None:
-    conn = psycopg2.connect(**DB_KW)
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = db_connect()
+    cur = conn.cursor()
     cur.execute(
         """
         SELECT api_id, name, ort, cleaner, quality,

@@ -7,11 +7,9 @@ and reverses obfuscated email *before* applying (at)/(dot) substitution.
 import os
 import re
 import base64
-import psycopg2
-import psycopg2.extras
 from dotenv import load_dotenv
 
-from data_cleaner import PHONE_RE, EMAIL_RE, validate_cleaned
+from data_cleaner import db_connect, PHONE_RE, EMAIL_RE, validate_cleaned
 from fix_suspects import normalize_ort
 
 load_dotenv()
@@ -92,59 +90,7 @@ def fix_email(email: str) -> str:
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """SELECT api_id, ort, telefon_clean, email_clean, adresse_clean,
-                  geschaeftsfuehrung_clean, einrichtungsleitung_clean
-           FROM pflegeheime WHERE quality='suspect'"""
-    )
-    rows = cur.fetchall()
-    upd = conn.cursor()
-
-    a_tel = a_email = 0
-    flipped = 0
-    for r in rows:
-        old_tel = r["telefon_clean"] or ""
-        old_email = r["email_clean"] or ""
-        new_tel = fix_phone(old_tel)
-        new_email = fix_email(old_email)
-
-        if new_tel != old_tel: a_tel += 1
-        if new_email != old_email: a_email += 1
-
-        cleaned = {
-            "telefon": new_tel,
-            "email": new_email,
-            "adresse": r["adresse_clean"] or "",
-            "geschaeftsfuehrung": r["geschaeftsfuehrung_clean"] or "",
-            "einrichtungsleitung": r["einrichtungsleitung_clean"] or "",
-            "notes": "",
-        }
-        cleaned = validate_cleaned(cleaned, normalize_ort(r["ort"] or ""))
-        if cleaned["quality"] != "suspect":
-            flipped += 1
-        upd.execute(
-            """UPDATE pflegeheime SET
-                 telefon_clean=%s, email_clean=%s,
-                 quality=%s, clean_notes=NULLIF(%s,'')
-               WHERE api_id=%s""",
-            (new_tel, new_email, cleaned["quality"], cleaned.get("notes", ""), r["api_id"]),
-        )
-    conn.commit()
-
-    print(f"phone fixes:  {a_tel}")
-    print(f"email fixes:  {a_email}")
-    print(f"flipped quality (mostly suspect→ok|empty): {flipped}")
-
-    upd.execute(
-        """SELECT cleaner, quality, COUNT(*) FROM pflegeheime
-           WHERE cleaner IS NOT NULL GROUP BY cleaner, quality ORDER BY cleaner, quality"""
-    )
+    conn = db_connect()
     print("\nfinal:")
     for cl, q, n in upd.fetchall():
         print(f"  {cl:<28} {q:<10} {n}")

@@ -50,13 +50,11 @@ CREATE TABLE IF NOT EXISTS domain_impressum (
     traeger         TEXT,
     quelle_zitat    TEXT,
     method          TEXT,
-    grounded        BOOLEAN,
+    grounded        INTEGER,
     crawl_status    TEXT,
     impressum_text  TEXT,
-    crawled_at      TIMESTAMPTZ DEFAULT NOW()
+    crawled_at      TEXT DEFAULT CURRENT_TIMESTAMP
 );
-ALTER TABLE domain_impressum ADD COLUMN IF NOT EXISTS method TEXT;
-ALTER TABLE domain_impressum ADD COLUMN IF NOT EXISTS impressum_text TEXT;
 """
 
 _local = threading.local()

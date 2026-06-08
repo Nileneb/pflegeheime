@@ -35,3 +35,18 @@ def test_seed_is_idempotent(conn):
     assert n1 == len(sources.TIER1)
     assert n2 == 0  # zweiter Lauf fügt nichts hinzu (UNIQUE url)
     assert conn.execute("SELECT count(*) c FROM sources").fetchone()["c"] == len(sources.TIER1)
+
+
+def test_param_shim_translates_pyformat(tmp_path, monkeypatch):
+    monkeypatch.setenv("PFLEGE_DB", str(tmp_path / "shim.db"))
+    from marktradar import db
+    conn = db.db_connect()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO domain_feeds(domain, has_feed) VALUES (%s, %s)", ("x.de", 1))
+    conn.commit()
+    cur.execute("SELECT has_feed FROM domain_feeds WHERE domain=%(d)s", {"d": "x.de"})
+    assert cur.fetchone()[0] == 1
+    with conn.cursor() as c2:                      # context-manager cursor must work
+        c2.execute("SELECT count(*) FROM domain_feeds")
+        assert c2.fetchone()[0] == 1
+    conn.close()

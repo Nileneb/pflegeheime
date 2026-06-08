@@ -10,9 +10,8 @@ Output: 'traeger' column gets one of:
 """
 
 import os
+from data_cleaner import db_connect
 import re
-import psycopg2
-import psycopg2.extras
 from urllib.parse import urlparse
 from collections import Counter
 from dotenv import load_dotenv
@@ -75,34 +74,7 @@ def classify(name: str, email: str, website: str) -> str:
 
 
 def main() -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
-    with conn.cursor() as cur:
-        cur.execute(ALTER_SQL)
-    conn.commit()
-
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT api_id, name, website, email_clean, telefon_clean
-        FROM pflegeheime
-        """
-    )
-    rows = cur.fetchall()
-    print(f"classifying {len(rows)} rows…\n")
-
-    upd = conn.cursor()
-    counter: Counter[str] = Counter()
-    for r in rows:
-        label = classify(r["name"] or "", r["email_clean"] or "", r["website"] or "")
-        counter[label] += 1
-        upd.execute(
-            "UPDATE pflegeheime SET traeger = %s WHERE api_id = %s",
-            (label, r["api_id"]),
-        )
+    conn = db_connect()
     conn.commit()
 
     print("Träger-Verteilung:")

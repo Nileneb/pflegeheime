@@ -23,12 +23,11 @@ are skipped.
 from __future__ import annotations
 
 import os
+from data_cleaner import db_connect
 import re
 import json
 import time
 import requests
-import psycopg2
-import psycopg2.extras
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
@@ -309,73 +308,7 @@ def process_row(row: dict) -> dict:
 
 
 def main(workers: int = 6, limit: int | None = None) -> None:
-    conn = psycopg2.connect(
-        host=os.getenv("PGHOST"), port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"), password=os.getenv("PGPASSWORD"),
-    )
-    with conn.cursor() as cur:
-        cur.execute(ALTER_SQL)
-    conn.commit()
-
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT api_id, name, ort, website, impressum_url
-        FROM pflegeheime
-        WHERE cleaner IS NOT NULL
-          AND (gf_source IS NULL OR gf_source = 'none')
-          AND (website IS NOT NULL AND website <> '')
-        ORDER BY api_id
-        """
-        + (f" LIMIT {limit}" if limit else "")
-    )
-    rows = cur.fetchall()
-    print(f"refreshing GF/EL on {len(rows)} rows ({workers} workers)…\n")
-
-    upd = conn.cursor()
-    counts = {"impressum": 0, "llm": 0, "none": 0}
-    completed = 0
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(process_row, dict(r)): r for r in rows}
-        for fut in as_completed(futures):
-            try:
-                res = fut.result()
-            except Exception as exc:
-                print(f"  worker err: {exc}")
-                continue
-            counts[res["source"]] += 1
-
-            updates = ["gf_source = %s"]
-            params: list[str] = [res["source"]]
-            if res["gf"]:
-                updates.append("geschaeftsfuehrung_clean = %s")
-                params.append(res["gf"])
-            if res["el"]:
-                updates.append("einrichtungsleitung_clean = %s")
-                params.append(res["el"])
-            if res["note"]:
-                updates.append("clean_notes = COALESCE(clean_notes,'') || %s")
-                params.append(" | " + res["note"])
-            params.append(res["api_id"])
-            upd.execute(
-                f"UPDATE pflegeheime SET {', '.join(updates)} WHERE api_id = %s",
-                params,
-            )
-            completed += 1
-            if completed % 50 == 0:
-                conn.commit()
-                print(f"  {completed}/{len(rows)} | impressum={counts['impressum']} "
-                      f"llm={counts['llm']} none={counts['none']}")
-
-    conn.commit()
-    print(f"\nfinal: {counts}")
-
-    upd.execute(
-        """SELECT gf_source, COUNT(*) FROM pflegeheime
-           WHERE cleaner IS NOT NULL GROUP BY gf_source ORDER BY COUNT(*) DESC"""
-    )
+    conn = db_connect()
     print("\ngf_source overall:")
     for src, n in upd.fetchall():
         print(f"  {src or '<null/no-website>':<14} {n}")

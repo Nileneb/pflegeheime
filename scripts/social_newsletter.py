@@ -58,9 +58,9 @@ CREATE TABLE IF NOT EXISTS domain_social (
     whatsapp           TEXT,
     newsletter_url     TEXT,
     newsletter_provider TEXT,
-    has_newsletter     BOOLEAN DEFAULT FALSE,
+    has_newsletter     INTEGER DEFAULT 0,
     status             TEXT,
-    fetched_at         TIMESTAMPTZ DEFAULT NOW()
+    fetched_at         TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 

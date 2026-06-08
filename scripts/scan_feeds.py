@@ -38,12 +38,12 @@ DDL = """
 CREATE TABLE IF NOT EXISTS domain_feeds (
     domain     TEXT PRIMARY KEY,
     rss_url    TEXT,
-    feed_count INT DEFAULT 0,
+    feed_count INTEGER DEFAULT 0,
     news_url   TEXT,
-    has_feed   BOOLEAN DEFAULT FALSE,
-    has_news   BOOLEAN DEFAULT FALSE,
+    has_feed   INTEGER DEFAULT 0,
+    has_news   INTEGER DEFAULT 0,
     status     TEXT,
-    scanned_at TIMESTAMPTZ DEFAULT NOW()
+    scanned_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 

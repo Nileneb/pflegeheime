@@ -215,6 +215,11 @@ class Handler(BaseHTTPRequestHandler):
                 src = tuple(b["sources"]) if b.get("sources") else ("mastodon", "bluesky", "news")
                 _json(self, hashtags.refresh(conn, src, int(b.get("limit", 15)),
                                              only_id=b.get("id")))
+            elif path == "/api/hashtags/tag":
+                b = self._body()
+                _json(self, hashtags.tag_articles(
+                    conn, None, auto_create=bool(b.get("auto_create", True)),
+                    limit=int(b.get("limit", 400))))
             elif path == "/api/geocode_org":
                 b = self._body()
                 _json(self, geo.geocode_units(conn, b.get("traeger", "Bergische Diakonie"),

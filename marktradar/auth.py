@@ -34,18 +34,31 @@ PUBLIC_KEY = _load_public_key()
 
 def verify(token: str) -> dict | None:
     """dict bei gültigem Token; None bei ungültig; {} wenn Auth deaktiviert (kein Key).
-    Audience wird nur geprüft, wenn PFLEGE_JWT_AUDIENCE gesetzt ist (sonst akzeptiert
-    der Server jedes vom zentralen AS signierte, gültige Token — Issuer/Signatur/exp
-    werden immer geprüft)."""
+    Issuer/Audience werden nur geprüft, wenn PFLEGE_JWT_ISSUER/AUDIENCE gesetzt sind
+    (sonst nur Signatur + Ablauf). Bei Fehler: diagnostisches Log mit echtem iss/aud."""
     if not PUBLIC_KEY:
         return {}
+    import sys
+
     import jwt
+    kwargs = {"algorithms": ["RS256"], "options": {"verify_aud": bool(AUDIENCE)}}
+    if AUDIENCE:
+        kwargs["audience"] = AUDIENCE
+    if ISSUER:
+        kwargs["issuer"] = ISSUER
     try:
-        return jwt.decode(
-            token, PUBLIC_KEY, algorithms=["RS256"], issuer=ISSUER,
-            audience=AUDIENCE or None,
-            options={"verify_aud": bool(AUDIENCE)})
-    except Exception:
+        return jwt.decode(token, PUBLIC_KEY, **kwargs)
+    except Exception as e:
+        try:
+            unv = jwt.decode(token, options={"verify_signature": False})
+            head = jwt.get_unverified_header(token)
+        except Exception:
+            unv, head = None, None
+        print(f"[auth] verify FAILED: {e!r} | unverified iss="
+              f"{unv.get('iss') if unv else 'NOT_A_JWT'} aud="
+              f"{unv.get('aud') if unv else '?'} claims="
+              f"{list(unv.keys()) if unv else '?'} header={head}",
+              file=sys.stderr, flush=True)
         return None
 
 

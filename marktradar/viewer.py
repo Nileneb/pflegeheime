@@ -886,6 +886,13 @@ function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=mak
       if(keys['Space'])o.position.y+=sp;if(keys['KeyC'])o.position.y=Math.max(1.7,o.position.y-sp);}
     renderer.render(scene,camera);})();
   SCENE=H;}
+// Prozedurale Fenster-Fassade (Canvas-Textur) → macht den OSM-Klotz plastischer.
+let WINTEX=null;
+function winTexture(){if(WINTEX)return WINTEX;const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');
+  x.fillStyle='#cfd6df';x.fillRect(0,0,128,128);
+  x.fillStyle='#52627a';for(let yy=16;yy<118;yy+=26)for(let xx=14;xx<118;xx+=26){x.fillRect(xx,yy,16,18);}
+  x.strokeStyle='#aeb6c2';x.lineWidth=2;for(let yy=16;yy<118;yy+=26)for(let xx=14;xx<118;xx+=26)x.strokeRect(xx,yy,16,18);
+  WINTEX=new THREE.CanvasTexture(c);WINTEX.wrapS=WINTEX.wrapT=THREE.RepeatWrapping;return WINTEX;}
 // ── Multi-View-Capture des Fokus-Gebäudes (im Browser, legal/token-frei) → Meshy ──
 function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
   const foc=H.focal,box=new THREE.Box3().setFromObject(foc),c=box.getCenter(new THREE.Vector3()),sz=box.getSize(new THREE.Vector3());
@@ -894,9 +901,13 @@ function captureMultiview(size=560){const H=SCENE;if(!H||!H.focal)return [];
   const hidden=[];H.scene.traverse(o=>{if(o.isMesh&&!isUnder(o)){hidden.push([o,o.visible]);o.visible=false;}});
   const oBg=H.scene.background,oFog=H.scene.fog,oW=H.renderer.domElement.width,oH=H.renderer.domElement.height;
   H.scene.background=new THREE.Color(0xdde3ec);H.scene.fog=null;
-  // neutrale Capture-Materialien aufs Fokus-Gebäude (Wand hell, Dach dunkler → Form klar)
+  // Capture-Materialien aufs Fokus-Gebäude: Wand mit Fenster-Textur, Dach Ziegelton →
+  // deutlich plastischere architektonische Ground-Truth (statt nacktem grauen Klotz).
   const oMats=[];foc.traverse(o=>{if(o.isMesh){oMats.push([o,o.material]);const rf=o===foc.userData.roofMesh;
-    o.material=new THREE.MeshStandardMaterial({color:rf?0x7a8290:0x97a1b0,roughness:0.85,metalness:0.04});}});
+    if(rf){o.material=new THREE.MeshStandardMaterial({color:0x8a5a44,roughness:0.92});}
+    else{const tx=winTexture().clone();tx.needsUpdate=true;tx.wrapS=tx.wrapT=THREE.RepeatWrapping;
+      tx.repeat.set(Math.max(2,Math.round((sz.x+sz.z)/4)),Math.max(2,Math.round(sz.y/3.0)));
+      o.material=new THREE.MeshStandardMaterial({color:0xd6dbe2,map:tx,roughness:0.8});}}});
   // Eigenes, gedämpftes Licht nur für den Capture → klare Flächen-Schattierung (Form für Meshy).
   const capLights=new THREE.Group();
   capLights.add(new THREE.AmbientLight(0xffffff,0.38));
@@ -930,9 +941,14 @@ function toggleSel(el){const u=el.dataset.full;const i=RKSEL.indexOf(u);
   $('rkstatus').textContent=RKSEL.length+'/4 gewählt';}
 function openReskin(){if(!SCENE||!SCENE.focal){console.warn('kein Fokus-Gebäude');return;}if(SCENE.controls.isLocked)SCENE.controls.unlock();
   $('reskinov').classList.remove('hide');setRkMode('osm');}
-async function sendReskin(){const imgs=RKMODE==='photo'?RKSEL:RKIMGS;
-  if(!imgs.length){$('rkstatus').textContent=RKMODE==='photo'?'erst Fotos wählen':'kein Modell';return;}
-  const st=$('rkstatus');st.textContent='lädt + prüft + sendet '+imgs.length+(RKMODE==='photo'?' Fotos':' Ansichten')+' an Meshy… (kann ~20s dauern)';$('rksend').disabled=true;
+async function sendReskin(){
+  // OSM = architektonische Ground-Truth (Geometrie) IMMER mitsenden; gewählte Fotos
+  // ergänzen die reale Erscheinung. Meshy multi-image: max 4 → 2 OSM + bis 2 Fotos.
+  let imgs;
+  if(RKMODE==='photo'&&RKSEL.length){imgs=[...RKIMGS.slice(0,2),...RKSEL.slice(0,2)];}
+  else imgs=RKIMGS;
+  if(!imgs.length){$('rkstatus').textContent=RKMODE==='photo'?'erst Fotos wählen (OSM wird automatisch mitgesendet)':'kein OSM-Modell';return;}
+  const st=$('rkstatus');st.textContent='lädt + prüft + sendet '+imgs.length+' Bilder (OSM + Fotos) an Meshy… (~20s)';$('rksend').disabled=true;
   try{const resp=await POST('api/org/reskin',{unit_id:SCENE.unit,name:SCENE.name,prompt:$('rkprompt').value,images:imgs});
     const txt=await resp.text();let r;try{r=JSON.parse(txt);}catch(_){r={error:'HTTP '+resp.status+': '+txt.slice(0,160)};}
     st.innerHTML=r.error?('Fehler: '+esc(r.error)):('✓ Meshy-Task <b>'+esc(r.task_id||r.job_id||'?')+'</b> gestartet — GLB kommt per Webhook.');

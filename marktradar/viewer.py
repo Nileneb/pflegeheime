@@ -28,10 +28,31 @@ def _reskin(body):
     tok = os.getenv("MCP_SERVICE_TOKEN", "")
     if not tok:
         return {"error": "MCP_SERVICE_TOKEN nicht gesetzt (in .env.mayring)"}
-    imgs = body.get("images") or []
-    if not imgs:
+    raw = body.get("images") or []
+    if not raw:
         return {"error": "keine Bilder"}
-    payload = {"images": imgs[:4], "prompt": body.get("prompt", ""),
+    # Foto-URLs selbst laden + QUALITÄT prüfen + als base64 → Meshy (kein Hotlink-Block,
+    # kein Geld für Müll). OSM-Renders (data:) sind schon geprüft → durchreichen.
+    import base64
+    from marktradar import mapillary
+    imgs, rejected = [], []
+    for im in raw[:4]:
+        if isinstance(im, str) and im.startswith("data:"):
+            imgs.append(im)
+        elif isinstance(im, str) and im.startswith("http"):
+            try:
+                rq = urllib.request.Request(im, headers={"User-Agent": ddg_images.UA})
+                b = urllib.request.urlopen(rq, timeout=20).read()
+                q = mapillary.quality(b)
+                if not q.get("ok"):
+                    rejected.append(f"{q.get('reason')}")
+                    continue
+                imgs.append("data:image/jpeg;base64," + base64.b64encode(b).decode())
+            except Exception as e:
+                rejected.append(f"{type(e).__name__}")
+    if not imgs:
+        return {"error": "keine brauchbaren Bilder (Qualität/Download): " + "; ".join(rejected)}
+    payload = {"images": imgs, "prompt": body.get("prompt", ""),
                "meta": {"unit_id": body.get("unit_id"), "name": body.get("name"),
                         "callback_url": os.getenv("PFLEGE_RESKIN_CALLBACK",
                                                   "http://pflege-viewer:8765/api/org/meshy_done")}}

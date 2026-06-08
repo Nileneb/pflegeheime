@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, geo, hashtags, organigram, query
+from marktradar import db, geo, hashtags, mapillary, organigram, query
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
@@ -93,6 +93,17 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/org/scene":
                 _json(self, geo.scene(conn, int(q.get("id", ["0"])[0]),
                                       int(q.get("radius", ["320"])[0])))
+            elif u.path == "/api/org/streetview":
+                row = conn.execute("SELECT name,lat,lon FROM org_units WHERE id=?",
+                                   (int(q.get("id", ["0"])[0]),)).fetchone()
+                if not row or row["lat"] is None:
+                    _json(self, {"error": "not geocoded"})
+                else:
+                    try:
+                        _json(self, {"name": row["name"],
+                                     **mapillary.candidates(row["lat"], row["lon"])})
+                    except Exception as e:  # Token fehlt / Mapillary down → klare Meldung
+                        _json(self, {"error": f"{type(e).__name__}: {e}", "name": row["name"]})
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:

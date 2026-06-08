@@ -9,3 +9,4 @@ mcp>=1.2
 pytest>=8.0
 PyJWT[crypto]>=2.8
 cairosvg>=2.7
+Pillow>=10.0

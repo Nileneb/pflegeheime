@@ -47,3 +47,33 @@ def test_classify_events_backfill(conn):
     assert n >= 1
     row = conn.execute("SELECT event_type FROM articles WHERE id=?", (aid,)).fetchone()
     assert row["event_type"] == "insolvenz"
+
+
+def test_classify_topics_stores_llm_stance(conn, monkeypatch):
+    aid = _article(conn, "Verband kritisiert Pflegereform scharf")
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": '{"Pflegereform":"kritisch"}'}}
+    monkeypatch.setattr(entities.requests, "post", lambda *a, **k: R())
+    rep = entities.classify_topics(conn)
+    assert rep["classified"] >= 1
+    row = conn.execute("SELECT stance FROM article_topics WHERE article_id=? AND topic='Pflegereform'",
+                       (aid,)).fetchone()
+    assert row["stance"] == "kritisch"
+
+
+def test_discourse_aggregates_party_stance(conn, monkeypatch):
+    from marktradar import query
+    entities.seed_entities(conn)
+    _article(conn, "CDU fordert mehr Personal in der Pflege")
+    entities.tag_articles(conn)
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": '{"Personal & Fachkräfte":"fordernd"}'}}
+    monkeypatch.setattr(entities.requests, "post", lambda *a, **k: R())
+    entities.classify_topics(conn)
+    d = query.discourse(conn)
+    pers = [t for t in d["topics"] if t["topic"] == "Personal & Fachkräfte"][0]
+    assert any(n["name"] == "CDU" and n["stance"] == "fordernd" for n in pers["nodes"])

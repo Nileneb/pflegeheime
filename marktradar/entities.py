@@ -1,9 +1,16 @@
 """Entity-Layer: Seed (kuratierte Major-Player + Träger aus den Heimen + Hersteller),
-deterministisches Wortgrenzen-Alias-Tagging Artikel→Entität und Keyword-Event-
-Klassifikation. NER-Extraktion ist als spätere Stufe vorgesehen (Spalten
-entities.source / article_entities.method tragen dafür 'ner')."""
+deterministisches Wortgrenzen-Alias-Tagging Artikel→Entität, Keyword-Event-
+Klassifikation und LLM-Stance pro Thema (Diskurs). NER-Extraktion ist als spätere
+Stufe vorgesehen (Spalten entities.source / article_entities.method tragen dafür 'ner')."""
 import json
 import re
+
+import requests
+
+from marktradar import embeddings
+
+OLLAMA_HOST = embeddings.OLLAMA_HOST
+STANCE_MODEL = "qwen3.5:9b"
 
 # Kuratierte große Betreiber/Träger (canonical, [aliases])
 SEED_TRAEGER = [
@@ -35,6 +42,31 @@ SEED_HERSTELLER = [
     ("Hermann Bock", []),
     ("Connext", ["Vivendi"]),
     ("DAN Produkte", []),
+]
+
+# Parteien (Diskurs-Akteure)
+SEED_PARTEIEN = [
+    ("CDU", ["CDU/CSU", "Union", "Christdemokraten"]),
+    ("CSU", []),
+    ("SPD", ["Sozialdemokraten"]),
+    ("Bündnis 90/Die Grünen", ["Die Grünen", "Grüne", "B90"]),
+    ("FDP", ["Freie Demokraten"]),
+    ("Die Linke", ["Linkspartei", "Linksfraktion"]),
+    ("AfD", ["Alternative für Deutschland"]),
+    ("BSW", ["Bündnis Sahra Wagenknecht"]),
+]
+
+# Institutionen / Verbände / Gewerkschaften (Diskurs-Akteure jenseits Träger)
+SEED_INSTITUTION = [
+    ("WHO", ["Weltgesundheitsorganisation", "World Health Organization"]),
+    ("RKI", ["Robert Koch-Institut", "Robert-Koch-Institut"]),
+    ("BMG", ["Bundesgesundheitsministerium", "Gesundheitsministerium"]),
+    ("GKV-Spitzenverband", ["GKV-Spitzenverband"]),
+    ("vdek", ["Ersatzkassen"]),
+    ("ver.di", ["verdi"]),
+    ("VdK", ["Sozialverband VdK"]),
+    ("Deutscher Pflegerat", ["Pflegerat"]),
+    ("BVMed", ["Bundesverband Medizintechnologie"]),
 ]
 
 EVENT_RULES = [
@@ -79,6 +111,10 @@ def seed_entities(conn) -> int:
         ins(name, "traeger", al, "seed")
     for name, al in SEED_HERSTELLER:
         ins(name, "hersteller", al, "seed")
+    for name, al in SEED_PARTEIEN:
+        ins(name, "partei", al, "seed")
+    for name, al in SEED_INSTITUTION:
+        ins(name, "behoerde", al, "seed")
     seen = {r["name"].lower() for r in conn.execute("SELECT name FROM entities").fetchall()}
     for r in conn.execute("SELECT DISTINCT traeger FROM pflegeheime").fetchall():
         t = _clean_traeger(r["traeger"])
@@ -158,3 +194,71 @@ def classify_events(conn, article_ids=None) -> int:
             n += 1
     conn.commit()
     return n
+
+
+# ── LLM-Stance pro Diskurs-Thema ─────────────────────────────────────────────
+# Keyword-GATE (welche Themen ein Artikel überhaupt berühren KÖNNTE) → bounded
+# LLM-Aufrufe nur auf Treffer. Stance selbst kommt vom LLM (qwen), nicht vom Keyword.
+TOPIC_PREFILTER = {
+    "Pflegereform": r"pflegereform|pflegeneuordnung|\breform\b|gesetzentwurf|referentenentwurf",
+    "Finanzierung & Tariftreue": r"tariftreue|finanzier|vergütung|\bbeitrag|\bkosten\b|sparen|\bspar|eigenanteil",
+    "Personal & Fachkräfte": r"personal|fachkräfte|fachkraft|personalbemessung|personaluntergrenze|pflegekräfte|ausbildung",
+    "Bürokratie & Digitalisierung": r"bürokrat|digitalisier|dokumentation|entlastung|\bki\b|software",
+    "Prävention & Versorgung": r"prävention|versorgung|vorsorge|\bambulant|stationär",
+}
+_PREFILTER = {t: re.compile(p, re.I) for t, p in TOPIC_PREFILTER.items()}
+STANCE_LABELS = ("kritisch", "fordernd", "befürwortend", "neutral")
+_STANCE_SYS = (
+    "Du bestimmst die HALTUNG des Absenders einer Pflege-/Gesundheits-Meldung zu "
+    "vorgegebenen Themen. Pro Thema genau eine Haltung: 'kritisch' (lehnt ab/warnt), "
+    "'fordernd' (verlangt Maßnahmen), 'befürwortend' (unterstützt/begrüßt) oder "
+    "'neutral' (nur Bericht ohne Wertung). Antworte NUR als JSON-Objekt "
+    "{\"<thema>\": \"<haltung>\"} für genau die genannten Themen.")
+
+
+def classify_topics(conn, article_ids=None) -> dict:
+    """Bestimmt je Artikel die Stance zu den Themen, die er (per Keyword-Gate) berührt,
+    via qwen → article_topics. Bounded: LLM nur auf Themen-Treffer. Idempotent
+    (überspringt bereits klassifizierte). Gibt {classified, failed} zurück."""
+    if article_ids is None:
+        rows = conn.execute(
+            "SELECT id, title, summary FROM articles a "
+            "WHERE id NOT IN (SELECT article_id FROM article_topics)").fetchall()
+    else:
+        if not article_ids:
+            return {"classified": 0, "failed": 0}
+        ph = ",".join("?" * len(article_ids))
+        rows = conn.execute(
+            f"SELECT id, title, summary FROM articles WHERE id IN ({ph})",
+            list(article_ids)).fetchall()
+    classified = failed = 0
+    for a in rows:
+        text = f"{a['title'] or ''} {a['summary'] or ''}"
+        topics = [t for t, rgx in _PREFILTER.items() if rgx.search(text)]
+        if not topics:
+            continue
+        try:
+            payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
+                       "think": False, "messages": [
+                           {"role": "system", "content": _STANCE_SYS},
+                           {"role": "user", "content":
+                            f"Themen: {', '.join(topics)}\nTitel: {a['title']}\n"
+                            f"Text: {a['summary'] or ''}"[:1600]}],
+                       "options": {"temperature": 0.0, "num_ctx": 2048, "num_predict": 160}}
+            r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=90)
+            r.raise_for_status()
+            d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
+        except Exception:
+            failed += 1
+            continue
+        for t in topics:
+            st = str(d.get(t, "neutral")).lower().strip()
+            if st not in STANCE_LABELS:
+                st = "neutral"
+            conn.execute("INSERT OR IGNORE INTO article_topics(article_id,topic,stance) "
+                         "VALUES (?,?,?)", (a["id"], t, st))
+        classified += 1
+        if classified % 20 == 0:  # WHY: live-Fortschritt im Viewer + crash-safe
+            conn.commit()
+    conn.commit()
+    return {"classified": classified, "failed": failed}

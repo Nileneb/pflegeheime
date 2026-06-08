@@ -157,8 +157,9 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
     from marktradar import entities
     tagged = entities.tag_articles(conn, new_ids)
     entities.classify_events(conn, new_ids)
+    stance = entities.classify_topics(conn, new_ids)
     return {"new": new_total, "embedded": len(new_ids), "tagged": tagged,
-            "errors": errors, "sources": len(srcs)}
+            "stance": stance, "errors": errors, "sources": len(srcs)}
 
 
 def backfill_embeddings(conn, limit: int | None = None) -> int:

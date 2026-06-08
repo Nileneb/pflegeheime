@@ -172,48 +172,36 @@ def graph_data(conn, limit: int = 12) -> dict:
 # WHY: Stance ist v1 heuristisch (Keyword) — bewusst erklärbar/kostenlos; eine
 # LLM-Verfeinerung (qwen Stance-Detection) ist als nächste Stufe vorgesehen.
 import re as _re
-DISCOURSE_TOPICS = {
-    "Pflegereform": r"pflegereform|pflegeneuordnung|\breform\b",
-    "Finanzierung & Tariftreue": r"tariftreue|finanzier|vergütung|beitrag|\bkosten\b|sparen|\bspar",
-    "Personal": r"personal|fachkräfte|personalbemessung|personaluntergrenze|pflegekräfte",
-}
 DISCOURSE_TERMS = ["Pflegereform", "Tariftreue", "Personal", "Insolvenz", "Beitrag",
                    "Demenz", "Bürokratie", "Digitalisierung", "Prävention"]
-_STANCE = [
-    ("kritisch", _re.compile(r"kritik|kritisiert|warnt|warnung|\bgegen\b|ablehn|sorge|besorgt|protest|sturm|\baxt\b|gefährd|sparreform|scharf", _re.I)),
-    ("fordernd", _re.compile(r"fordert|forderung|appell|verlangt|drängt|mahnt|\bbraucht\b|nötig|notwendig", _re.I)),
-    ("befürwortend", _re.compile(r"begrüßt|unterstützt|\blobt\b|positiv|zustimmung|\bchance", _re.I)),
-]
-def _stance(text: str) -> str:
-    for name, rgx in _STANCE:
-        if rgx.search(text):
-            return name
-    return "neutral"
 
 
 def discourse(conn) -> dict:
-    """Positionen je Thema (Stakeholder→dominante Stance) + Themen/Hashtag-Radar."""
+    """Positionen je Thema aus LLM-Stance (article_topics), je Entität aggregiert
+    (dominante Haltung), + Themen/Hashtag-Radar."""
+    from marktradar import entities
     links = conn.execute(
         "SELECT e.name ename, a.title, a.summary, a.published, a.source_domain "
         "FROM article_entities ae JOIN entities e ON e.id=ae.entity_id "
         "JOIN articles a ON a.id=ae.article_id").fetchall()
     arts = conn.execute("SELECT title, summary, published, source_domain FROM articles").fetchall()
 
+    bytopic = {}
+    for r in conn.execute(
+            "SELECT at.topic, e.name ename, at.stance, count(*) n "
+            "FROM article_topics at "
+            "JOIN article_entities ae ON ae.article_id = at.article_id "
+            "JOIN entities e ON e.id = ae.entity_id "
+            "WHERE at.stance IS NOT NULL "
+            "GROUP BY at.topic, e.name, at.stance").fetchall():
+        d = bytopic.setdefault(r["topic"], {}).setdefault(r["ename"], {})
+        d[r["stance"]] = d.get(r["stance"], 0) + r["n"]
     topics = []
-    for topic, pat in DISCOURSE_TOPICS.items():
-        rgx = _re.compile(pat, _re.I)
-        agg = {}
-        for r in links:
-            txt = f"{r['ename']} {r['title']} {r['summary'] or ''}"
-            if rgx.search(f"{r['title']} {r['summary'] or ''}"):
-                d = agg.setdefault(r["ename"], {})
-                st = _stance(txt)
-                d[st] = d.get(st, 0) + 1
-        nodes = []
-        for name, cnt in sorted(agg.items(), key=lambda x: -sum(x[1].values()))[:8]:
-            dom = max(cnt, key=cnt.get)
-            nodes.append({"name": name, "stance": dom, "count": sum(cnt.values()),
-                          "breakdown": cnt})
+    for topic in entities.TOPIC_PREFILTER:
+        agg = bytopic.get(topic, {})
+        nodes = [{"name": name, "stance": max(cnt, key=cnt.get),
+                  "count": sum(cnt.values()), "breakdown": cnt}
+                 for name, cnt in sorted(agg.items(), key=lambda x: -sum(x[1].values()))[:10]]
         topics.append({"topic": topic, "nodes": nodes})
 
     terms = []
@@ -240,4 +228,4 @@ def discourse(conn) -> dict:
         })
     terms.sort(key=lambda x: -x["count"])
     return {"topics": topics, "terms": terms,
-            "note": "Stance v1 heuristisch (Keyword) — LLM-Verfeinerung geplant"}
+            "note": "Stance via qwen-LLM pro Artikel (Thema-gegated)"}

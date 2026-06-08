@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS article_entities (
     PRIMARY KEY (article_id, entity_id)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS article_topics (
+    article_id INTEGER REFERENCES articles(id),
+    topic TEXT NOT NULL,
+    stance TEXT,
+    PRIMARY KEY (article_id, topic)
+);
 """
 
 VEC_SCHEMA = (
@@ -70,6 +76,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=8000")  # WHY: paralleler Ingest + Viewer + Backfill
     return conn
 
 

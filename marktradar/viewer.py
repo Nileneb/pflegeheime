@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, hashtags, organigram, query
+from marktradar import db, geo, hashtags, organigram, query
 
 DB_PATH = os.getenv("PFLEGE_DB", db.DEFAULT_DB)
 PORT = int(os.getenv("PFLEGE_VIEWER_PORT", "8765"))
@@ -89,6 +89,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
+            elif u.path == "/api/org/scene":
+                _json(self, geo.scene(conn, int(q.get("id", ["0"])[0]),
+                                      int(q.get("radius", ["320"])[0])))
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
@@ -125,6 +128,10 @@ class Handler(BaseHTTPRequestHandler):
                 src = tuple(b["sources"]) if b.get("sources") else ("mastodon", "bluesky", "news")
                 _json(self, hashtags.refresh(conn, src, int(b.get("limit", 15)),
                                              only_id=b.get("id")))
+            elif path == "/api/geocode_org":
+                b = self._body()
+                _json(self, geo.geocode_units(conn, b.get("traeger", "Bergische Diakonie"),
+                                              b.get("limit")))
             else:
                 _json(self, {"error": "not found"}, 404)
         finally:
@@ -274,6 +281,20 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .flowwrap{overflow:auto;padding:6px 0 16px;max-height:74vh}
 #org3d{height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
 .flegend{display:flex;gap:14px;margin-top:8px;flex-wrap:wrap;font-size:10px;color:var(--mut)}
+#scene3d{position:fixed;inset:0;z-index:500;background:#05080f}
+#sccanvas{position:absolute;inset:0}
+.schud{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:14px;padding:12px 16px;background:linear-gradient(#05080fcc,#05080f00);pointer-events:none;z-index:3}
+.schud>*{pointer-events:auto}
+.schd{display:flex;flex-direction:column}
+.schd #scname{color:#fff;font-weight:600;font-size:14px}
+.scsub{color:var(--mut);font-size:10px}
+.scstyles{display:flex;gap:6px;margin-left:8px}
+.scbtn{padding:5px 11px;border:1px solid var(--ln);border-radius:6px;color:var(--mut);cursor:pointer;font-size:11px;background:#0f1622cc}
+.scbtn.on{background:var(--accent);color:#06142e;border-color:var(--accent);font-weight:600}
+.schint{margin-left:auto;color:var(--mut);font-size:11px}
+.sclock{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0f1622dd;border:1px solid var(--accent);color:#fff;padding:14px 26px;border-radius:10px;font-size:15px;cursor:pointer;z-index:4}
+.scload{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:var(--mut);font-size:12px;z-index:4}
+.schide{display:none}
 </style></head><body>
 <div class=hd>
   <h1>PFLEGE·MARKTRADAR</h1><span class=sub>LIVE VIEWER</span>
@@ -361,11 +382,30 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
     </div>
     <div id=orgflow class=muted>lädt…</div>
     <div id=org3d class=hide></div>
+    <div class=muted style="margin-top:8px;font-size:10px">Tipp: Klick auf eine <b style="color:#67d98b">Einrichtung</b> (Blatt-Knoten) → begehbare 3D-Welt (WASD)</div>
   </div>
 </section>
 
+<div id=scene3d class=hide>
+  <div id=sccanvas></div>
+  <div class=schud>
+    <div class=schd><span id=scname>Einrichtung</span><span class=scsub id=scsub></span></div>
+    <div class=scstyles>
+      <span class="scbtn on" data-st=real onclick="setSceneStyle('real')">1 · Real</span>
+      <span class=scbtn data-st=neon onclick="setSceneStyle('neon')">2 · Neon</span>
+      <span class=scbtn data-st=toon onclick="setSceneStyle('toon')">3 · Toon</span>
+      <span class=scbtn data-st=blueprint onclick="setSceneStyle('blueprint')">4 · Blueprint</span>
+    </div>
+    <span class=schint>WASD bewegen · Maus schauen · Shift rennen · ESC raus</span>
+    <button class=btn id=scexit>✕ schließen</button>
+  </div>
+  <div id=sclock class=sclock>▶ Klick zum Loslaufen</div>
+  <div id=scload class=scload>lädt OSM-Gebäude…</div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
 <script>
 const EVC={insolvenz:'#ff4d4d',politik:'#5b8def',expansion:'#2ecc71',personalie:'#f0a830',produkt:'#9b6dff',auszeichnung:'#26c6da',schliessung:'#ff7043'};
 const evc=t=>EVC[t]||'#7a8290';
@@ -516,10 +556,11 @@ async function refreshHt(){const b=$('htrefresh');b.textContent='lädt…';b.dis
   try{await POST('api/hashtags/refresh',{limit:15});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
 function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const renderer=makeRenderer(el);
   const scene=new THREE.Scene();
-  const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.1,100);
+  const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.002,100);
   camera.position.copy(ll2v(32,12,2.7));  // Startblick auf Europa/DE (Cluster)
   const controls=new THREE.OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=0.08;
-  controls.enablePan=false;controls.minDistance=1.4;controls.maxDistance=5;controls.autoRotate=false;
+  controls.enablePan=false;controls.minDistance=1.012;controls.maxDistance=6;controls.autoRotate=false;
+  controls.zoomSpeed=0.8;controls.rotateSpeed=0.7;  // nah ranzoomen (DE beobachten) + feinere Drehung
   scene.add(new THREE.AmbientLight(0x6982b8,0.32));  // gedämpft → Tag/Nacht-Kontrast sichtbar
   // Sonne: Richtung = subsolarer Punkt aus aktueller UTC-Zeit (Berlin-Tageszeit), live nachgeführt.
   const sun=new THREE.DirectionalLight(0xfff1cc,1.25);scene.add(sun);scene.add(sun.target);
@@ -585,7 +626,8 @@ function renderOrgFlow(root){if(!root){$('orgflow').className='muted';$('orgflow
   const boxes=L.NODES.map(({n,x,y})=>{const col=n.color||'#46527a';const full=(n.short_name||n.name);
     const short=full.length>20?full.slice(0,19)+'…':full;const lbl=esc((n.icon?n.icon+' ':'')+short);
     const w=Math.min(160,Math.max(60,lbl.length*7+16));const bg=n.level===0?col:'#0f1622';const tc=n.level===0?'#fff':'#dbe2ec';
-    return `<g><title>${esc((n.icon?n.icon+' ':'')+full)}</title><rect x="${x-w/2}" y="${y-14}" width="${w}" height="28" rx="7" fill="${bg}" stroke="${col}" stroke-width="1.7"/>`+
+    const ein=n.type==='einrichtung';const clk=ein?` style="cursor:pointer" onclick="openScene3d({id:${n.id},name:'${esc(full).replace(/'/g,'')}',type:'einrichtung'})"`:'';
+    return `<g${clk}><title>${esc((n.icon?n.icon+' ':'')+full)}${ein?' — Klick: 3D-Welt':''}</title><rect x="${x-w/2}" y="${y-14}" width="${w}" height="28" rx="7" fill="${bg}" stroke="${ein?'#67d98b':col}" stroke-width="${ein?2.2:1.7}"/>`+
       `<text x="${x}" y="${y+4}" text-anchor=middle fill="${tc}" font-size="11">${lbl}</text></g>`;}).join('');
   $('orgflow').className='flowwrap';
   $('orgflow').innerHTML=`<svg width="${L.w}" height="${H}" viewBox="0 0 ${L.w} ${H}" style="min-width:${L.w}px">${edges}${boxes}</svg>`;}
@@ -598,16 +640,81 @@ function renderOrg3D(root){disposeScene(ORG3D);const el=$('org3d');const rendere
   const pos=n=>{const a=(n._x/leaves)*Math.PI*2,r=n._d*72;return new THREE.Vector3(r*Math.cos(a),-n._d*82+150,r*Math.sin(a));};
   (function place(n){const p=pos(n);const r=n._d===0?11:n._d===1?7.5:n._d===2?5:3.4;
     const m=new THREE.Mesh(sgeo,new THREE.MeshBasicMaterial({color:new THREE.Color(n.color||'#46527a')}));
-    m.position.copy(p);m.scale.setScalar(r);scene.add(m);
+    m.position.copy(p);m.scale.setScalar(r);m.userData.unit=n;scene.add(m);
     (n.children||[]).forEach(ch=>{const cp=pos(ch);seg.push(p.x,p.y,p.z,cp.x,cp.y,cp.z);place(ch);});})(root);
   const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(seg,3));
   scene.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x2a3550,transparent:true,opacity:0.55})));
+  // Klick auf Einrichtungs-Knoten → begehbare 3D-Welt
+  const ray=new THREE.Raycaster(),mo=new THREE.Vector2();
+  renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
+    mo.x=((ev.clientX-r.left)/r.width)*2-1;mo.y=-((ev.clientY-r.top)/r.height)*2+1;ray.setFromCamera(mo,camera);
+    const hit=ray.intersectObjects(scene.children).find(o=>o.object.userData.unit);
+    if(hit){const n=hit.object.userData.unit;if(n.type==='einrichtung')openScene3d(n);}});
   const H={renderer};(function loop(){H.raf=requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();ORG3D=H;}
+
+// ── 3D-OSM-BURNER: begehbare Welt der Einrichtung (Overpass-Gebäude, WASD, Stile) ──
+let SCENE=null;
+function projXY(lat,lon,lat0,lon0){return [(lon-lon0)*111320*Math.cos(lat0*Math.PI/180), -(lat-lat0)*110540];}
+async function openScene3d(unit){const ov=$('scene3d');ov.classList.remove('hide');
+  $('scname').textContent=unit.name||'Einrichtung';$('scsub').textContent='lädt OSM-Gebäude…';
+  $('scload').classList.remove('schide');$('scload').textContent='lädt OSM-Gebäude…';
+  let d;try{d=await j('api/org/scene?id='+unit.id);}catch(e){d={error:String(e)};}
+  if(!d||d.error){$('scsub').textContent='Fehler: '+((d&&d.error)||'?')+((d&&(d.error||'').includes('geocoded'))?' — erst Geocoding laufen lassen':'');
+    $('scload').textContent=(d&&d.error)||'Fehler';return;}
+  if(d.name)$('scname').textContent=d.name;
+  $('scsub').textContent=d.buildings.length+' Gebäude · '+(d.address||(d.center.lat.toFixed(4)+', '+d.center.lon.toFixed(4)));
+  $('scload').classList.add('schide');buildScene(d);}
+function disposeSceneR(){if(SCENE){cancelAnimationFrame(SCENE.raf);document.removeEventListener('keydown',SCENE.kd);document.removeEventListener('keyup',SCENE.ku);
+  if(SCENE.controls&&SCENE.controls.isLocked)SCENE.controls.unlock();
+  if(SCENE.renderer){SCENE.renderer.dispose();const d=SCENE.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}SCENE=null;}}
+function closeScene(){disposeSceneR();$('scene3d').classList.add('hide');}
+function setSceneStyle(n){if(SCENE)SCENE.applyStyle(n);}
+function buildScene(d){disposeSceneR();const el=$('sccanvas');const renderer=makeRenderer(el);
+  const scene=new THREE.Scene();
+  const camera=new THREE.PerspectiveCamera(72,el.clientWidth/el.clientHeight,0.1,5000);camera.position.set(0,1.7,0);
+  const controls=new THREE.PointerLockControls(camera,renderer.domElement);scene.add(controls.getObject());
+  controls.getObject().position.set(0,1.7,45);
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(6000,6000),new THREE.MeshStandardMaterial({color:0x222a33,roughness:1}));
+  ground.rotation.x=-Math.PI/2;scene.add(ground);
+  scene.add(new THREE.HemisphereLight(0xbfd4ff,0x202830,0.95));
+  const sun=new THREE.DirectionalLight(0xfff3da,1.0);sun.position.set(120,220,80);scene.add(sun);
+  const lat0=d.center.lat,lon0=d.center.lon,mats=[];const focalKey=(d.name||'').toLowerCase();
+  d.buildings.forEach(b=>{const shp=new THREE.Shape();let ok=true;
+    b.coords.forEach((c,i)=>{const [x,z]=projXY(c[0],c[1],lat0,lon0);if(!isFinite(x)||!isFinite(z))ok=false;i?shp.lineTo(x,z):shp.moveTo(x,z);});
+    if(!ok)return;let g;try{g=new THREE.ExtrudeGeometry(shp,{depth:Math.max(3,b.height),bevelEnabled:false});}catch(e){return;}
+    g.rotateX(-Math.PI/2);const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x8590a6,roughness:0.92}));
+    m.userData.focal=!!(b.name&&focalKey&&(b.name.toLowerCase().includes(focalKey)||focalKey.includes(b.name.toLowerCase())));
+    scene.add(m);mats.push(m);});
+  // Stil-Presets
+  function applyStyle(name){document.querySelectorAll('.scbtn').forEach(x=>x.classList.toggle('on',x.dataset.st===name));
+    let bg,fog,gc,mk;
+    if(name==='neon'){bg=0x05030f;fog=[0x05030f,60,800];gc=0x0a0618;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffe24d:0x00ffd0,wireframe:true});}
+    else if(name==='toon'){bg=0xcfe7ff;fog=[0xcfe7ff,200,1600];gc=0x7da35a;mk=b=>new THREE.MeshToonMaterial({color:b.userData.focal?0xffb347:0xb7c7dd});}
+    else if(name==='blueprint'){bg=0x0a1a3a;fog=[0x0a1a3a,100,1300];gc=0x06122a;mk=b=>new THREE.MeshBasicMaterial({color:b.userData.focal?0xffd24d:0x66ccff,wireframe:true});}
+    else{bg=0x9fb6d4;fog=[0x9fb6d4,250,1800];gc=0x2a3340;mk=b=>new THREE.MeshStandardMaterial({color:b.userData.focal?0xffcc44:0x8590a6,roughness:0.92});}
+    scene.background=new THREE.Color(bg);scene.fog=new THREE.Fog(fog[0],fog[1],fog[2]);ground.material.color.set(gc);
+    mats.forEach(m=>{m.material.dispose();m.material=mk(m);});}
+  const keys={},kd=e=>{keys[e.code]=true;if(['1','2','3','4'].includes(e.key))applyStyle(['real','neon','toon','blueprint'][+e.key-1]);},ku=e=>{keys[e.code]=false;};
+  document.addEventListener('keydown',kd);document.addEventListener('keyup',ku);
+  el.onclick=()=>controls.lock();
+  controls.addEventListener('lock',()=>$('sclock').classList.add('schide'));
+  controls.addEventListener('unlock',()=>{if(SCENE)$('sclock').classList.remove('schide');});
+  const clock=new THREE.Clock();const H={renderer,controls,kd,ku,applyStyle};
+  applyStyle('real');$('sclock').classList.remove('schide');
+  (function loop(){H.raf=requestAnimationFrame(loop);const dt=Math.min(0.05,clock.getDelta());
+    if(controls.isLocked){const sp=(keys['ShiftLeft']||keys['ShiftRight']?30:12)*dt;const o=controls.getObject();
+      if(keys['KeyW'])controls.moveForward(sp);if(keys['KeyS'])controls.moveForward(-sp);
+      if(keys['KeyD'])controls.moveRight(sp);if(keys['KeyA'])controls.moveRight(-sp);
+      if(keys['Space'])o.position.y+=sp;if(keys['KeyC'])o.position.y=Math.max(1.7,o.position.y-sp);}
+    renderer.render(scene,camera);})();
+  SCENE=H;}
 $('tprev').onclick=()=>{dtIdx--;loadDiscourseTopic();};
 $('tnext').onclick=()=>{dtIdx++;loadDiscourseTopic();};
 $('htrefresh').onclick=refreshHt;
 $('htaddbtn').onclick=addHt;
 $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
+$('scexit').onclick=closeScene;
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&SCENE&&!SCENE.controls.isLocked)closeScene();});
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
   ['dash','graph','timeline','diskurs','globe','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
@@ -620,7 +727,9 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   if(t.dataset.t==='org') loadOrg();
   if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);
 });
-(function(){const h=(location.hash||'').replace('#','');const t=h&&document.querySelector('.tab[data-t='+h+']');if(t)t.click();})();
+(function(){const h=(location.hash||'').replace('#','');
+  if(h.indexOf('scene=')===0){openScene3d({id:+h.split('=')[1]});return;}
+  const t=h&&document.querySelector('.tab[data-t='+h+']');if(t)t.click();})();
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 
 async function loadGraph(){renderGraph(await j('api/graph'));}

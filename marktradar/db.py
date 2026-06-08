@@ -121,6 +121,13 @@ def bootstrap(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE article_topics ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # Geo-Koordinaten + Adresse je Org-Einheit (für die 3D-Szene / OSM-Burner) und
+    # Meshy-Modell-URL (Phase 2: AI-reskinnte Gebäude).
+    for col in ("lat REAL", "lon REAL", "address TEXT", "meshy_url TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE org_units ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 

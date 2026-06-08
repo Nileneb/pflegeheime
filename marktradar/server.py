@@ -258,6 +258,14 @@ def hashtag_map() -> dict:
     return hashtags.map_data(_conn)
 
 
+@mcp.tool()
+def geocode_org(traeger: str = "Bergische Diakonie") -> dict:
+    """Geokodiert die Einrichtungen eines Trägers (Nominatim) → lat/lon für die
+    begehbare 3D-OSM-Szene. Einmalig nötig; Nominatim-Policy max 1 req/s."""
+    from marktradar import geo
+    return geo.geocode_units(_conn, traeger)
+
+
 def main():
     transport = os.getenv("PFLEGE_MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":

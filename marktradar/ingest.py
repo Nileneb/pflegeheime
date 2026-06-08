@@ -79,3 +79,69 @@ def classify(title: str, summary: str) -> tuple:
     r.raise_for_status()
     d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
     return bool(d.get("relevant")), (d.get("kategorie") or "")[:60], (d.get("grund") or "")[:200]
+
+
+def _domain(url: str) -> str:
+    from urllib.parse import urlparse
+    return (urlparse(url).netloc or "").replace("www.", "")
+
+
+def refresh(conn, source_filter: str | None = None, since_days: int = 14,
+            limit: int | None = None) -> dict:
+    """Holt enabled Quellen, diff't über UNIQUE(source_id,guid), embedded + klassifiziert
+    neue Items. Fehler je Quelle landen in sources.last_status UND im Report (nicht geschluckt)."""
+    q = "SELECT id, name, url FROM sources WHERE enabled=1 AND type='rss'"
+    params: list = []
+    if source_filter:
+        q += " AND (name LIKE ? OR url LIKE ?)"
+        params += [f"%{source_filter}%", f"%{source_filter}%"]
+    srcs = conn.execute(q, params).fetchall()
+
+    new_total, errors, new_ids = 0, [], []
+    now = datetime.now(timezone.utc).isoformat()
+    for s in srcs:
+        try:
+            content = fetch(s["url"])
+            if content is None:
+                conn.execute("UPDATE sources SET last_fetched=?, last_status=? WHERE id=?",
+                             (now, "error: kein Feed/Non-200", s["id"]))
+                errors.append({"source": s["name"], "error": "kein Feed/Non-200"})
+                conn.commit()
+                continue
+            items = parse_feed(content)
+            if limit:
+                items = items[:limit]
+            ins = 0
+            for it in items:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO articles"
+                    "(source_id,source_domain,guid,link,title,summary,published,fetched_at)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (s["id"], _domain(s["url"]), it["guid"], it["link"], it["title"],
+                     it["summary"], it["published"], now))
+                if cur.rowcount:
+                    new_ids.append(cur.lastrowid)
+                    ins += 1
+            conn.execute("UPDATE sources SET last_fetched=?, last_status=? WHERE id=?",
+                         (now, "ok", s["id"]))
+            conn.commit()
+            new_total += ins
+        except Exception as e:  # WHY: Fehler je Quelle isolieren, aber NICHT verschlucken
+            conn.execute("UPDATE sources SET last_fetched=?, last_status=? WHERE id=?",
+                         (now, f"error: {e}", s["id"]))
+            conn.commit()
+            errors.append({"source": s["name"], "error": str(e)})
+
+    # Embedden + klassifizieren der frisch eingefügten Items
+    for aid in new_ids:
+        row = conn.execute("SELECT title, summary FROM articles WHERE id=?", (aid,)).fetchone()
+        text = f"{row['title']} {row['summary'] or ''}".strip()
+        vec = embeddings.embed(text)
+        conn.execute("INSERT OR REPLACE INTO article_vec(article_id, embedding) VALUES (?,?)",
+                     (aid, serialize_float32(vec)))
+        rel, kat, grund = classify(row["title"], row["summary"] or "")
+        conn.execute("UPDATE articles SET relevant=?, kategorie=?, grund=? WHERE id=?",
+                     (None if rel is None else int(rel), kat, grund, aid))
+    conn.commit()
+    return {"new": new_total, "embedded": len(new_ids), "errors": errors,
+            "sources": len(srcs)}

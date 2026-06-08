@@ -77,6 +77,12 @@ CREATE TABLE IF NOT EXISTS article_hashtags (
     auto INTEGER DEFAULT 0,
     PRIMARY KEY (article_id, hashtag_id)
 );
+CREATE TABLE IF NOT EXISTS hashtag_translations (
+    hashtag_id INTEGER NOT NULL,
+    lang_code TEXT NOT NULL,
+    term TEXT NOT NULL,
+    PRIMARY KEY(hashtag_id, lang_code)
+);
 """
 
 VEC_SCHEMA = (

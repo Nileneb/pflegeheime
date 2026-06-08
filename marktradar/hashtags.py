@@ -7,6 +7,7 @@ Hashtags sind CRUD-fähig (Tabelle `hashtags`), Posts liegen in `hashtag_posts`.
 """
 import html as _html
 import json
+import logging
 import os
 import re
 import sys
@@ -16,6 +17,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 import requests
+
+from marktradar import languages as _langs
+
+_log = logging.getLogger(__name__)
 
 UA = "pflege-marktradar/1.0 (+https://pflege.linn.games)"
 TIMEOUT = 12
@@ -438,6 +443,108 @@ def trends(conn):
     }
 
 
+# ── Translation service ──
+
+_TRANSLATE_SYS = (
+    "You are a professional translator. Translate the given German word or short phrase "
+    "into ALL target languages listed in the JSON input. Return ONLY a strict JSON object "
+    "mapping each language code to the translated term. Use the same casing style as the "
+    "input (e.g., capitalise if input is capitalised). No explanations, no extra keys."
+)
+
+_JSON_OBJ = re.compile(r"\{[^{}]*\}", re.S)
+
+
+def _parse_translation_json(raw: str) -> dict[str, str]:
+    """Extract {lang_code: term} from LLM response, tolerating surrounding text."""
+    if not raw:
+        return {}
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return {str(k): str(v) for k, v in obj.items() if v}
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = _JSON_OBJ.search(raw)
+    if not m:
+        return {}
+    try:
+        obj = json.loads(m.group(0))
+        return {str(k): str(v) for k, v in obj.items() if v}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def translate_hashtag(conn, term: str, target_langs: list[str]) -> dict[str, str]:
+    """Batch-translate a German hashtag term into all target_langs via Ollama chat.
+
+    Returns {lang_code: translated_term}. On any error returns {} and logs a warning
+    — never silently swallows, never returns partial garbage from an exception path.
+    """
+    from marktradar import embeddings
+    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
+    payload = {"term": term, "languages": {code: _langs.by_code(code)["name"] for code in target_langs}}
+    try:
+        r = requests.post(
+            f"{embeddings.CHAT_HOST}/api/chat",
+            headers=embeddings.chat_headers(),
+            json={
+                "model": model,
+                "format": "json",
+                "stream": False,
+                "think": False,
+                "messages": [
+                    {"role": "system", "content": _TRANSLATE_SYS},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 2048},
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        msg = (r.json().get("message") or {})
+        content = msg.get("content")
+        parsed = _parse_translation_json(content if content and content.strip()
+                                         else msg.get("thinking", ""))
+        # Keep only codes that were actually requested and have non-empty values
+        return {k: v for k, v in parsed.items() if k in target_langs and v and v.strip()}
+    except Exception as exc:
+        _log.warning("translate_hashtag(%r) failed: %s: %s", term, type(exc).__name__, exc)
+        return {}
+
+
+def ensure_translations(conn, hashtag_id: int, term: str,
+                        target_langs: list[str] | None = None) -> dict[str, str]:
+    """Cache-first translation: reads existing rows, translates only missing langs, persists.
+
+    Returns the full {lang_code: term} dict for all requested langs that are available.
+    Idempotent: safe to call repeatedly.
+    """
+    if target_langs is None:
+        target_langs = _langs.CODES
+
+    existing = {
+        r["lang_code"]: r["term"]
+        for r in conn.execute(
+            "SELECT lang_code, term FROM hashtag_translations WHERE hashtag_id=?",
+            (hashtag_id,),
+        ).fetchall()
+    }
+    missing = [code for code in target_langs if code not in existing]
+    if missing:
+        new_translations = translate_hashtag(conn, term, missing)
+        if new_translations:
+            conn.executemany(
+                "INSERT OR REPLACE INTO hashtag_translations(hashtag_id, lang_code, term) "
+                "VALUES (?, ?, ?)",
+                [(hashtag_id, code, translated) for code, translated in new_translations.items()],
+            )
+            conn.commit()
+            existing.update(new_translations)
+
+    return {code: existing[code] for code in target_langs if code in existing}
+
+
 # ── Map-Daten für den Globus ──
 def map_data(conn, max_points=600):
     tags = {r["id"]: dict(r) for r in conn.execute(
@@ -478,5 +585,28 @@ def map_data(conn, max_points=600):
         sources.setdefault(r["hashtag_id"], [])
         if len(sources[r["hashtag_id"]]) < 12:
             sources[r["hashtag_id"]].append(dict(r))
-    return {"legend": legend, "points": points, "sources": sources, "trends": tr["pairs"],
-            "total_posts": sum(c[0] for c in counts.values())}
+
+    # Build translations map keyed by canonical hashtag term (active only)
+    translations: dict[str, dict[str, str]] = {}
+    active_terms = {t["id"]: t["term"] for t in tags.values() if t.get("active")}
+    if active_terms:
+        rows_t = conn.execute(
+            "SELECT ht.hashtag_id, ht.lang_code, ht.term "
+            "FROM hashtag_translations ht "
+            f"WHERE ht.hashtag_id IN ({','.join('?' * len(active_terms))})",
+            list(active_terms.keys()),
+        ).fetchall()
+        for r in rows_t:
+            canonical = active_terms.get(r["hashtag_id"])
+            if canonical:
+                translations.setdefault(canonical, {})[r["lang_code"]] = r["term"]
+
+    return {
+        "legend": legend,
+        "points": points,
+        "sources": sources,
+        "trends": tr["pairs"],
+        "total_posts": sum(c[0] for c in counts.values()),
+        "translations": translations,
+        "languages": _langs.LANGUAGES,
+    }

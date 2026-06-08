@@ -226,7 +226,32 @@ def list_hashtags() -> list[dict]:
 @mcp.tool()
 def add_hashtag(term: str, color: str = "#5b8def") -> dict:
     """Neuen Hashtag zur Beobachtung aufnehmen (CRUD). color = Hex für die Karten-Punkte."""
-    return hashtags.add(_conn, term, color)
+    result = hashtags.add(_conn, term, color)
+    # Best-effort translation at creation time — must not break add if LLM is down.
+    try:
+        hashtag_id = result.get("id")
+        if hashtag_id:
+            hashtags.ensure_translations(_conn, hashtag_id, result.get("term", term))
+    except Exception:
+        pass  # WHY: translation failure must never block hashtag creation
+    return result
+
+
+@mcp.tool()
+def translate_all_hashtags(langs: list[str] | None = None) -> dict:
+    """Übersetzt alle aktiven Hashtags in die angegebenen (oder alle ~40) Sprachen.
+    Nutzt Cache-first: bereits übersetzte Terme werden nicht neu angefragt.
+    Gibt {hashtag_term: count_translated} zurück."""
+    active = _conn.execute(
+        "SELECT id, term FROM hashtags WHERE active=1"
+    ).fetchall()
+    summary: dict[str, int] = {}
+    for row in active:
+        translations = hashtags.ensure_translations(
+            _conn, row["id"], row["term"], langs
+        )
+        summary[row["term"]] = len(translations)
+    return summary
 
 
 @mcp.tool()

@@ -16,15 +16,18 @@ Primärer Konsum: **interaktiv via MCP, on demand**. Kein Scheduler in dieser St
 
 ## Scope dieses Specs
 
-Dieser Spec deckt **Slice 0 (Fundament)** + **Slice 1 (Ingest-Repoint)** ab. Slices 2–4 sind
+Dieser Spec deckt **Slice 0 (Fundament)** + **Slice 1 (Ingest-Repoint)** ab. Slices 2–5 sind
 eigene Specs:
 
 - **Slice 2 — Entity-Layer:** `entities`-Tabelle, Embedding-Tagging Artikel→Entität,
   Event-Klassifikation, Tools `get_entity`/`timeline`.
 - **Slice 3 — Signal-Goldminen:** Insolvenzbekanntmachungen, Bundesanzeiger, Ämter/Parteien.
 - **Slice 4 — Register-Backfill:** Pflegelotse/BKK/AOK bundesweit.
+- **Slice 5 — Viewer/Visualisierung:** eigener SSE-Viewer-Service (2D-Karten/Timeline/Graph +
+  optional three.js-Szene), gespeist aus „View-Spec"-Payloads der MCP-Tools. Eigenes
+  Brainstorming/Spec — siehe Forward-Compat-Hinweis unten.
 
-Nicht in Scope: Digest-Automatik, Alerting, Postgres beibehalten.
+Nicht in Scope: Digest-Automatik, Alerting, Postgres beibehalten, der Viewer selbst.
 
 ---
 
@@ -33,7 +36,7 @@ Nicht in Scope: Digest-Automatik, Alerting, Postgres beibehalten.
 ```
                  ┌─────────────────────────────────────────┐
                  │           MCP-Server (FastMCP)           │
-                 │  search_news · refresh_news ·            │
+                 │  refresh_news · search_news ·            │
                  │  list_sources · add_source ·             │
                  │  search_heime · db_stats                 │
                  └───────────────┬─────────────────────────┘
@@ -43,7 +46,7 @@ Nicht in Scope: Digest-Automatik, Alerting, Postgres beibehalten.
    ┌────▼─────┐           ┌──────▼──────┐          ┌───────▼───────┐
    │ ingest.py│           │   db.py     │          │ embeddings.py │
    │ RSS→diff │──insert──▶│ pflege.db   │◀──vec────│ Ollama        │
-   │ →embed   │           │ (SQLite +   │          │ nomic-embed   │
+   │ →embed   │           │ (SQLite +   │          │ bge-m3 (1024d)│
    │ →classify│           │  sqlite-vec)│          │ localhost:11434│
    └────┬─────┘           └─────────────┘          └───────────────┘
         │
@@ -125,18 +128,19 @@ CREATE TABLE IF NOT EXISTS sources (
     config_json   TEXT              -- per-Quelle-Parameter (z. B. Scrape-Selektoren)
 );
 
--- Vektor-Index (sqlite-vec). dim = nomic-embed-text = 768.
+-- Vektor-Index (sqlite-vec). dim = bge-m3 = 1024.
 CREATE VIRTUAL TABLE IF NOT EXISTS article_vec USING vec0(
     article_id INTEGER PRIMARY KEY,
-    embedding  FLOAT[768]
+    embedding  FLOAT[1024]
 );
 ```
 
 ### `embeddings.py` — Vektorisierung
-- `embed(text) -> list[float]` über Ollama `POST /api/embeddings`, Model `nomic-embed-text`
-  (768 dim), Host `localhost:11434` (Laptop/Dev-Invariante).
+- `embed(text) -> list[float]` über Ollama `POST /api/embeddings`, Model `bge-m3`
+  (1024 dim, mehrsprachig, liegt bereits auf der GPU), Host `localhost:11434`
+  (Laptop/Dev-Invariante, eigene GPU).
 - `embed_batch(texts)` für Bulk beim Ingest.
-- Dim + Model über env (`EMBED_MODEL`, `EMBED_DIM`) konfigurierbar, Default fix.
+- Dim + Model über env (`EMBED_MODEL=bge-m3`, `EMBED_DIM=1024`) konfigurierbar, Default fix.
 - Ollama nicht erreichbar → **expliziter Fehler** (kein Fake-Vektor, kein stilles Skippen).
 
 ### `ingest.py` — Feed-Ingest (Slice 1)
@@ -156,12 +160,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS article_vec USING vec0(
 - Idempotent (re-runnable); zählt importierte Zeilen und gibt sie aus.
 
 ### `server.py` — MCP (FastMCP)
-Tools:
+Tools (Bau-/Testreihenfolge: **`refresh_news` zuerst** — erzeugt die Daten, gegen die
+`search_news` überhaupt erst testbar ist):
 
 | Tool | Signatur | Zweck |
 |---|---|---|
+| `refresh_news` | `(source_filter=None, since_days=14, limit=None)` | **MVP-Tool.** Ingest anstoßen, Report zurück (neu/Fehler je Quelle) |
 | `search_news` | `(query, limit=20, since_days=None, kategorie=None, only_relevant=True)` | Semantische (vec KNN) + Keyword-Suche über `articles` |
-| `refresh_news` | `(source_filter=None, since_days=14, limit=None)` | Ingest anstoßen, Report zurück (neu/Fehler je Quelle) |
 | `list_sources` | `()` | Registry + `last_fetched`/`last_status`/`enabled` |
 | `add_source` | `(name, url, type='rss', tier=1, region='DE')` | Neue Quelle ohne Code-Änderung registrieren |
 | `search_heime` | `(query, limit=20)` | Bestehende Entity-Basis (Name/Träger/Ort) durchsuchen |
@@ -212,15 +217,47 @@ Bleibt: `requests`, `feedparser`, `beautifulsoup4`, `lxml`, `openpyxl`.
 
 ## Migrationspfad / Aufräumen
 
-- `docker-compose.yml` (Postgres) entfernen.
-- `data_cleaner.db_connect()` + alle `import psycopg2` durch `db.py` ersetzen; Skripte unter
-  `scripts/`, die Postgres-Tabellen anlegen (`scan_feeds`, `social_newsletter`,
-  `crawl_impressum_gf`, `websearch_gf`, `ingest_feeds`), werden in Slice 1/2 schrittweise
-  umgehängt — in diesem Slice nur der Newsstrom-Pfad.
+- `docker-compose.yml` (Postgres) entfernen, `psycopg2-binary` aus requirements.
+- `data_cleaner.db_connect()` + **alle** `import psycopg2` durch `db.py` ersetzen. **Alle**
+  Postgres-nutzenden Skripte werden in diesem Slice mit umgehängt — kein paralleler PG-Pfad:
+  - `data_cleaner.py` (`pflegeheime`-Tabelle, `db_connect`)
+  - `scripts/scan_feeds.py` (`domain_feeds`)
+  - `scripts/ingest_feeds.py` (`feed_articles` → wird zu `articles`)
+  - `scripts/social_newsletter.py` (`domain_social`)
+  - `scripts/crawl_impressum_gf.py` (`domain_impressum`)
+  - `scripts/websearch_gf.py` (`websearch_gf`)
+  - `scripts/refresh_from_api.py`, `reextract_gf.py`, `gf_extract.py`, `compose_final.py`,
+    `export_final.py`, `fix_*.py` — soweit sie `db_connect`/psycopg2 importieren.
+  Konkrete SQL-Dialekt-Anpassungen (`%s`→`?`, `ON CONFLICT`, `BOOLEAN`→`INTEGER`,
+  `TIMESTAMPTZ`→`TEXT`, `BIGSERIAL`→`INTEGER PRIMARY KEY`) listet der Implementierungsplan
+  pro Datei auf. Verifikation: `grep -rl "psycopg2\|TIMESTAMPTZ\|BIGSERIAL" *.py scripts/`
+  liefert nach der Migration **keine** Treffer.
 - `pflege.db` in `.gitignore` (rebuildbar via `migrate.py`).
+
+## Forward-Compat: Viewer/Visualisierung (Slice 5, eigener Spec)
+
+Die Visualisierung wird **nicht** in Slice 0+1 gebaut, aber der MCP-Kern wird so strukturiert,
+dass ein späterer Viewer ohne Umbau andocken kann:
+
+- **Tools liefern strukturierte, render-fähige Payloads** (typisierte dicts mit Koordinaten,
+  Zeitstempeln, Entity-Refs), nicht nur Prosa. `search_news`/`search_heime` geben Felder
+  zurück, die direkt eine Karte/Timeline/Graph speisen können (lat/lon liegen bereits vor).
+- **Trennung Daten ↔ Darstellung:** Der MCP bleibt datenzentriert. Der Viewer ist ein
+  **separater, schlanker SSE-Service**, der dieselbe `pflege.db` liest und „View-Specs"
+  (deklaratives JSON: Typ + Datenquery + Encoding) zu konkreten Ansichten rendert.
+- **Mehrere Ansichten aus einer Quelle, gegen Überladung:** Default-Ansicht = fokussierte
+  2D-Sichten (Deutschland-Karte mit Heat/Cluster nach Region · Timeline der Signale ·
+  Entity-Graph Träger↔Hersteller↔Events). three.js-Szene (z. B. räumlicher Entity-Graph,
+  per SSE inkrementell gestreamt) ist eine **opt-in-Ansicht**, kein Default — Detailtiefe
+  wird über Filter/Zoom dosiert, nicht alles gleichzeitig gezeigt.
+- Offene Designfrage für den Slice-5-Spec: View-Spec-Schema, SSE-Protokoll (Snapshot +
+  Deltas), und ob der Viewer in `app.linn.games` lebt oder als Standalone-Static + SSE-Endpoint.
+
+Das ist hier nur als Leitplanke notiert; der eigentliche Viewer-Entwurf ist ein separates
+Brainstorming.
 
 ## Offene Punkte für den Implementierungsplan
 
 - Exakte Tier-1-Feed-URLs verifizieren (HTTP 200 + valides RSS).
 - Embedding-Granularität: `title + summary` vs. Volltext (Default: `title + summary`).
-- `nomic-embed-text` lokal verfügbar? Sonst `ollama pull` als Setup-Schritt dokumentieren.
+- `bge-m3` lokal verfügbar (laut User auf GPU) — im Plan per `ollama list` verifizieren.

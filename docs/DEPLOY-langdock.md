@@ -52,4 +52,4 @@ docker compose exec mcp-pflege python -c \
 - **NAS-Reverse-Proxy → Port 6481** (app.linn.games web-nginx). 6480 = mayring/memory-nginx (Falle!).
 - **OAuth-AS = `https://mcp.linn.games`** (hat `registration_endpoint`; app.linn.games nicht). DNS-Rebinding-Schutz aus (`PFLEGE_DNS_REBIND_PROTECT=0`).
 - **Chat-Modell = `gpt-oss:20b`** (Ollama Cloud; qwen dort nur 80b+/397b). Key via `env_file: .env.mayring` (`OLLAMA_CLOUD_API_KEY`). Embeddings (bge-m3) → GPU-Host `192.168.178.11`.
-- **TODO Härtung:** `PFLEGE_JWT_ISSUER`/`PFLEGE_JWT_AUDIENCE` aktuell leer (jedes zentral signierte Token gilt) → auf echte iss/aud setzen.
+- **Auth gehärtet:** iss=app.linn.games + aud=mayringcoder geprüft (AS gibt org-weites Token; pflege-Isolation bräuchte eigene Audience im Passport-AS).

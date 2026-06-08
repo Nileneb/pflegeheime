@@ -109,3 +109,135 @@ def list_entities(conn, type: str | None = None, limit: int = 50) -> list[dict]:
         sql += "WHERE e.type=? "; params.append(type)
     sql += "GROUP BY e.id ORDER BY articles DESC, e.name LIMIT ?"; params.append(limit)
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# ── Viewer-API (Live-Dashboard) ──────────────────────────────────────────────
+def get_meta(conn, key: str, default=None):
+    r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return r["value"] if r else default
+
+
+def set_meta(conn, key: str, value: str) -> None:
+    conn.execute("INSERT INTO meta(key,value) VALUES(?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    conn.commit()
+
+
+def overview(conn) -> dict:
+    """Kennzahlen + Änderungs-Deltas + Event-/Quellen-Status fürs Dashboard."""
+    one = lambda q, p=(): conn.execute(q, p).fetchone()[0]
+    last_seen = get_meta(conn, "last_seen", "1970-01-01")
+    from datetime import datetime, timezone, timedelta
+    d24 = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    return {
+        "stats": db_stats(conn),
+        "neu_seit_zuletzt": one("SELECT count(*) FROM articles WHERE fetched_at > ?", (last_seen,)),
+        "neu_24h": one("SELECT count(*) FROM articles WHERE fetched_at > ?", (d24,)),
+        "last_seen": last_seen,
+        "events": [dict(r) for r in conn.execute(
+            "SELECT event_type, count(*) n FROM articles WHERE event_type IS NOT NULL "
+            "GROUP BY event_type ORDER BY n DESC").fetchall()],
+        "sources": [dict(r) for r in conn.execute(
+            "SELECT name,region,enabled,last_status,last_fetched FROM sources "
+            "ORDER BY enabled DESC, name").fetchall()],
+        "entities": list_entities(conn, limit=12),
+    }
+
+
+def feed(conn, limit: int = 40, since_ts: str | None = None) -> list[dict]:
+    """Neueste Meldungen für den Feed; markiert, welche seit `since_ts` neu sind."""
+    rows = conn.execute(
+        "SELECT a.id,a.title,a.published,a.fetched_at,a.event_type,a.kategorie,"
+        "a.link,a.source_domain,"
+        "(SELECT group_concat(e.name,', ') FROM article_entities ae "
+        " JOIN entities e ON e.id=ae.entity_id WHERE ae.article_id=a.id) AS entities "
+        "FROM articles a ORDER BY a.published DESC NULLS LAST, a.id DESC LIMIT ?",
+        (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["is_new"] = bool(since_ts and r["fetched_at"] and r["fetched_at"] > since_ts)
+        out.append(d)
+    return out
+
+
+def graph_data(conn, limit: int = 12) -> dict:
+    """Knoten (Entitäten nach Nennungen) + Hub fürs Netzwerk-Tab."""
+    nodes = [e for e in list_entities(conn, limit=limit) if e["articles"] > 0]
+    total = conn.execute("SELECT count(*) FROM articles").fetchone()[0]
+    return {"hub": {"label": "MARKT", "count": total}, "nodes": nodes}
+
+
+# ── Diskurs/Positions-Radar ──────────────────────────────────────────────────
+# WHY: Stance ist v1 heuristisch (Keyword) — bewusst erklärbar/kostenlos; eine
+# LLM-Verfeinerung (qwen Stance-Detection) ist als nächste Stufe vorgesehen.
+import re as _re
+DISCOURSE_TOPICS = {
+    "Pflegereform": r"pflegereform|pflegeneuordnung|\breform\b",
+    "Finanzierung & Tariftreue": r"tariftreue|finanzier|vergütung|beitrag|\bkosten\b|sparen|\bspar",
+    "Personal": r"personal|fachkräfte|personalbemessung|personaluntergrenze|pflegekräfte",
+}
+DISCOURSE_TERMS = ["Pflegereform", "Tariftreue", "Personal", "Insolvenz", "Beitrag",
+                   "Demenz", "Bürokratie", "Digitalisierung", "Prävention"]
+_STANCE = [
+    ("kritisch", _re.compile(r"kritik|kritisiert|warnt|warnung|\bgegen\b|ablehn|sorge|besorgt|protest|sturm|\baxt\b|gefährd|sparreform|scharf", _re.I)),
+    ("fordernd", _re.compile(r"fordert|forderung|appell|verlangt|drängt|mahnt|\bbraucht\b|nötig|notwendig", _re.I)),
+    ("befürwortend", _re.compile(r"begrüßt|unterstützt|\blobt\b|positiv|zustimmung|\bchance", _re.I)),
+]
+def _stance(text: str) -> str:
+    for name, rgx in _STANCE:
+        if rgx.search(text):
+            return name
+    return "neutral"
+
+
+def discourse(conn) -> dict:
+    """Positionen je Thema (Stakeholder→dominante Stance) + Themen/Hashtag-Radar."""
+    links = conn.execute(
+        "SELECT e.name ename, a.title, a.summary, a.published, a.source_domain "
+        "FROM article_entities ae JOIN entities e ON e.id=ae.entity_id "
+        "JOIN articles a ON a.id=ae.article_id").fetchall()
+    arts = conn.execute("SELECT title, summary, published, source_domain FROM articles").fetchall()
+
+    topics = []
+    for topic, pat in DISCOURSE_TOPICS.items():
+        rgx = _re.compile(pat, _re.I)
+        agg = {}
+        for r in links:
+            txt = f"{r['ename']} {r['title']} {r['summary'] or ''}"
+            if rgx.search(f"{r['title']} {r['summary'] or ''}"):
+                d = agg.setdefault(r["ename"], {})
+                st = _stance(txt)
+                d[st] = d.get(st, 0) + 1
+        nodes = []
+        for name, cnt in sorted(agg.items(), key=lambda x: -sum(x[1].values()))[:8]:
+            dom = max(cnt, key=cnt.get)
+            nodes.append({"name": name, "stance": dom, "count": sum(cnt.values()),
+                          "breakdown": cnt})
+        topics.append({"topic": topic, "nodes": nodes})
+
+    terms = []
+    for t in DISCOURSE_TERMS:
+        tr = _re.compile(_re.escape(t), _re.I)
+        hits = [a for a in arts if tr.search(f"{a['title']} {a['summary'] or ''}")]
+        if not hits:
+            continue
+        doms, ents, weeks = {}, {}, {}
+        for a in hits:
+            if a["source_domain"]:
+                doms[a["source_domain"]] = doms.get(a["source_domain"], 0) + 1
+            wk = (a["published"] or "")[:7]
+            if wk:
+                weeks[wk] = weeks.get(wk, 0) + 1
+        for r in links:
+            if tr.search(f"{r['title']} {r['summary'] or ''}"):
+                ents[r["ename"]] = ents.get(r["ename"], 0) + 1
+        terms.append({
+            "term": t, "count": len(hits),
+            "sources": sorted(doms.items(), key=lambda x: -x[1])[:3],
+            "entities": [e for e, _ in sorted(ents.items(), key=lambda x: -x[1])[:4]],
+            "trend": [n for _, n in sorted(weeks.items())][-8:],
+        })
+    terms.sort(key=lambda x: -x["count"])
+    return {"topics": topics, "terms": terms,
+            "note": "Stance v1 heuristisch (Keyword) — LLM-Verfeinerung geplant"}

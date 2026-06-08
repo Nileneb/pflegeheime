@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS article_entities (
     method TEXT,
     PRIMARY KEY (article_id, entity_id)
 );
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 VEC_SCHEMA = (

@@ -118,6 +118,11 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
                 items = items[:limit]
             ins = 0
             for it in items:
+                # WHY: presseportal-Themenfeeds teilen denselben Artikel → quellen-
+                # übergreifend nach Link deduppen, sonst Dubletten je Themen-Feed.
+                if it["link"] and conn.execute(
+                        "SELECT 1 FROM articles WHERE link=? LIMIT 1", (it["link"],)).fetchone():
+                    continue
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO articles"
                     "(source_id,source_domain,guid,link,title,summary,published,fetched_at)"

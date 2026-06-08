@@ -225,6 +225,7 @@ def update(conn, hashtag_id, term=None, color=None, active=None):
 def delete(conn, hashtag_id):
     conn.execute("DELETE FROM hashtag_posts WHERE hashtag_id=?", (hashtag_id,))
     conn.execute("DELETE FROM article_hashtags WHERE hashtag_id=?", (hashtag_id,))
+    conn.execute("DELETE FROM hashtag_translations WHERE hashtag_id=?", (hashtag_id,))
     conn.execute("DELETE FROM hashtags WHERE id=?", (hashtag_id,))
     conn.commit()
     return {"deleted": hashtag_id}
@@ -475,15 +476,22 @@ def _parse_translation_json(raw: str) -> dict[str, str]:
         return {}
 
 
-def translate_hashtag(conn, term: str, target_langs: list[str]) -> dict[str, str]:
+def translate_hashtag(term: str, target_langs: list[str]) -> dict[str, str]:
     """Batch-translate a German hashtag term into all target_langs via Ollama chat.
 
+    Unknown lang codes (not in languages.LANGUAGES) are silently skipped before the
+    request is built — callers may pass user-supplied codes without risk of a TypeError.
     Returns {lang_code: translated_term}. On any error returns {} and logs a warning
     — never silently swallows, never returns partial garbage from an exception path.
     """
     from marktradar import embeddings
     model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
-    payload = {"term": term, "languages": {code: _langs.by_code(code)["name"] for code in target_langs}}
+    # WHY: user-supplied codes may not exist in the language table; filter them early
+    # to avoid a TypeError on _langs.by_code(code)["name"] for unknown codes.
+    known_langs = [code for code in target_langs if _langs.by_code(code) is not None]
+    if not known_langs:
+        return {}
+    payload = {"term": term, "languages": {code: _langs.by_code(code)["name"] for code in known_langs}}
     try:
         r = requests.post(
             f"{embeddings.CHAT_HOST}/api/chat",
@@ -503,11 +511,10 @@ def translate_hashtag(conn, term: str, target_langs: list[str]) -> dict[str, str
         )
         r.raise_for_status()
         msg = (r.json().get("message") or {})
-        content = msg.get("content")
-        parsed = _parse_translation_json(content if content and content.strip()
-                                         else msg.get("thinking", ""))
+        content = msg.get("content") or ""
+        parsed = _parse_translation_json(content)
         # Keep only codes that were actually requested and have non-empty values
-        return {k: v for k, v in parsed.items() if k in target_langs and v and v.strip()}
+        return {k: v for k, v in parsed.items() if k in known_langs and v and v.strip()}
     except Exception as exc:
         _log.warning("translate_hashtag(%r) failed: %s: %s", term, type(exc).__name__, exc)
         return {}
@@ -517,11 +524,18 @@ def ensure_translations(conn, hashtag_id: int, term: str,
                         target_langs: list[str] | None = None) -> dict[str, str]:
     """Cache-first translation: reads existing rows, translates only missing langs, persists.
 
+    Unknown lang codes (not in languages.LANGUAGES) are filtered out early so callers
+    can pass user-supplied code lists without risk of a TypeError downstream.
     Returns the full {lang_code: term} dict for all requested langs that are available.
     Idempotent: safe to call repeatedly.
     """
     if target_langs is None:
         target_langs = _langs.CODES
+
+    # WHY: user-supplied codes may include unknowns; filter before any DB/LLM access
+    target_langs = [code for code in target_langs if _langs.by_code(code) is not None]
+    if not target_langs:
+        return {}
 
     existing = {
         r["lang_code"]: r["term"]
@@ -532,7 +546,7 @@ def ensure_translations(conn, hashtag_id: int, term: str,
     }
     missing = [code for code in target_langs if code not in existing]
     if missing:
-        new_translations = translate_hashtag(conn, term, missing)
+        new_translations = translate_hashtag(term, missing)
         if new_translations:
             conn.executemany(
                 "INSERT OR REPLACE INTO hashtag_translations(hashtag_id, lang_code, term) "

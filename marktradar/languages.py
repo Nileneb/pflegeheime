@@ -52,4 +52,5 @@ CODES: list[str] = [lang["code"] for lang in LANGUAGES]
 
 
 def by_code(code: str) -> dict | None:
-    return _BY_CODE.get(code)
+    entry = _BY_CODE.get(code)
+    return dict(entry) if entry is not None else None

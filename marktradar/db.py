@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS article_hashtags (
     PRIMARY KEY (article_id, hashtag_id)
 );
 CREATE TABLE IF NOT EXISTS hashtag_translations (
-    hashtag_id INTEGER NOT NULL,
+    hashtag_id INTEGER NOT NULL REFERENCES hashtags(id) ON DELETE CASCADE,
     lang_code TEXT NOT NULL,
     term TEXT NOT NULL,
     PRIMARY KEY(hashtag_id, lang_code)

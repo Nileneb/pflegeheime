@@ -93,7 +93,7 @@ def test_translate_hashtag_parses_mocked_response(conn, monkeypatch):
     mock_translations = {"en": "Nursing Reform", "fr": "Réforme des soins", "es": "Reforma de cuidados"}
     monkeypatch.setattr(emb.requests, "post", _make_fake_post(mock_translations))
 
-    result = hashtags.translate_hashtag(conn, "Pflegereform", ["en", "fr", "es"])
+    result = hashtags.translate_hashtag("Pflegereform", ["en", "fr", "es"])
     assert result == mock_translations
 
 
@@ -103,7 +103,7 @@ def test_translate_hashtag_filters_unrequested_codes(conn, monkeypatch):
     mock_translations = {"en": "Nursing Reform", "de": "Pflegereform", "xx": "garbage"}
     monkeypatch.setattr(emb.requests, "post", _make_fake_post(mock_translations))
 
-    result = hashtags.translate_hashtag(conn, "Pflegereform", ["en"])
+    result = hashtags.translate_hashtag("Pflegereform", ["en"])
     assert set(result.keys()) == {"en"}
 
 
@@ -115,7 +115,7 @@ def test_translate_hashtag_returns_empty_on_network_failure(conn, monkeypatch):
         raise req.ConnectionError("refused")
 
     monkeypatch.setattr(emb.requests, "post", boom)
-    result = hashtags.translate_hashtag(conn, "Pflegereform", ["en", "fr"])
+    result = hashtags.translate_hashtag("Pflegereform", ["en", "fr"])
     assert result == {}
 
 
@@ -129,7 +129,7 @@ def test_translate_hashtag_returns_empty_on_http_error(conn, monkeypatch):
         def json(self): return {}
 
     monkeypatch.setattr(emb.requests, "post", lambda *a, **kw: BadResp())
-    result = hashtags.translate_hashtag(conn, "Pflegereform", ["en"])
+    result = hashtags.translate_hashtag("Pflegereform", ["en"])
     assert result == {}
 
 
@@ -141,7 +141,7 @@ def test_translate_hashtag_handles_malformed_json(conn, monkeypatch):
         def json(self): return {"message": {"content": "not json at all"}}
 
     monkeypatch.setattr(emb.requests, "post", lambda *a, **kw: BadJsonResp())
-    result = hashtags.translate_hashtag(conn, "Pflegereform", ["en"])
+    result = hashtags.translate_hashtag("Pflegereform", ["en"])
     assert result == {}
 
 
@@ -294,3 +294,102 @@ def test_country_language_values_in_language_codes():
     valid = set(languages.CODES)
     invalid = {k: v for k, v in cl.items() if v not in valid}
     assert not invalid, f"country_language.json has invalid lang codes: {invalid}"
+
+
+# ── New tests (code-quality review) ───────────────────────────────────────────
+
+def test_translate_all_hashtags_isolates_per_hashtag_failures(conn, monkeypatch):
+    """One hashtag failing must not abort processing of others."""
+    import marktradar.embeddings as emb
+    from marktradar import server as srv
+
+    conn.execute("INSERT INTO hashtags(term,color,active,created) VALUES ('GoodTag','#0f0',1,'2026-01-01')")
+    conn.execute("INSERT INTO hashtags(term,color,active,created) VALUES ('BrokenTag','#f00',1,'2026-01-01')")
+    conn.commit()
+
+    call_counter = {"n": 0}
+
+    def selective_post(url, json=None, headers=None, timeout=None):
+        payload = __import__("json").loads(json["messages"][-1]["content"])
+        call_counter["n"] += 1
+        if payload.get("term") == "BrokenTag":
+            raise RuntimeError("simulated LLM failure")
+
+        class R:
+            def raise_for_status(self): pass
+            def json(self): return {"message": {"content": __import__("json").dumps({"en": "Good"})}}
+        return R()
+
+    monkeypatch.setattr(emb.requests, "post", selective_post)
+    monkeypatch.setattr(srv, "_conn", conn)
+
+    result = srv.translate_all_hashtags(["en"])
+    assert "GoodTag" in result
+    assert result["GoodTag"] == 1
+    # BrokenTag is present in the summary (0 translations, not missing entirely)
+    assert "BrokenTag" in result
+    assert result["BrokenTag"] == 0
+
+
+def test_unknown_lang_codes_skipped_without_raising(conn, monkeypatch):
+    """ensure_translations and translate_hashtag must not raise on bogus lang codes."""
+    import marktradar.embeddings as emb
+
+    conn.execute("INSERT INTO hashtags(term,color,active,created) VALUES ('Pflegereform','#5b8def',1,'2026-01-01')")
+    conn.commit()
+    hid = conn.execute("SELECT id FROM hashtags WHERE term='Pflegereform'").fetchone()["id"]
+
+    monkeypatch.setattr(emb.requests, "post", _make_fake_post({"en": "Nursing Reform"}))
+
+    result = hashtags.ensure_translations(conn, hid, "Pflegereform", ["en", "xx", "zz"])
+    assert "en" in result
+    assert "xx" not in result
+    assert "zz" not in result
+
+    result2 = hashtags.translate_hashtag("Pflegereform", ["xx", "zz"])
+    assert result2 == {}
+
+
+def test_add_hashtag_best_effort_translation_failure(conn, monkeypatch):
+    """add_hashtag must return the created hashtag even when the translation LLM is down."""
+    import marktradar.embeddings as emb
+    import requests as req
+
+    def boom(*a, **kw):
+        raise req.ConnectionError("LLM is down")
+
+    monkeypatch.setattr(emb.requests, "post", boom)
+
+    conn.execute("INSERT INTO hashtags(term,color,active,created) VALUES ('Pflegekrise','#ff7043',1,'2026-01-01')")
+    conn.commit()
+    hid = conn.execute("SELECT id FROM hashtags WHERE term='Pflegekrise'").fetchone()["id"]
+
+    # Simulate what server.add_hashtag does
+    result = {"id": hid, "term": "Pflegekrise", "color": "#ff7043", "active": 1}
+    try:
+        hashtags.ensure_translations(conn, hid, "Pflegekrise")
+    except Exception:
+        pass  # WHY: translation failure must never block hashtag creation
+
+    assert result["id"] == hid
+    assert result["term"] == "Pflegekrise"
+
+
+def test_delete_removes_hashtag_translations(conn):
+    """delete() must clean up hashtag_translations rows."""
+    conn.execute("INSERT INTO hashtags(term,color,active,created) VALUES ('Pflegereform','#5b8def',1,'2026-01-01')")
+    conn.commit()
+    hid = conn.execute("SELECT id FROM hashtags WHERE term='Pflegereform'").fetchone()["id"]
+
+    conn.execute("INSERT INTO hashtag_translations(hashtag_id, lang_code, term) VALUES (?,?,?)",
+                 (hid, "en", "Nursing Reform"))
+    conn.execute("INSERT INTO hashtag_translations(hashtag_id, lang_code, term) VALUES (?,?,?)",
+                 (hid, "fr", "Réforme des soins"))
+    conn.commit()
+
+    hashtags.delete(conn, hid)
+
+    remaining = conn.execute(
+        "SELECT * FROM hashtag_translations WHERE hashtag_id=?", (hid,)
+    ).fetchall()
+    assert remaining == []

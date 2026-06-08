@@ -8,9 +8,12 @@ FastMCP /.well-known/oauth-protected-resource → Langdock entdeckt den Authoriz
 Server (app.linn.games) und führt den OAuth-Flow; die Tokens validiert der
 TokenVerifier (RS256) hier. Ohne Key → keine Auth (stdio/dev).
 """
+import logging
 import os
 
 from urllib.parse import urlparse
+
+_log = logging.getLogger(__name__)
 
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -241,16 +244,25 @@ def add_hashtag(term: str, color: str = "#5b8def") -> dict:
 def translate_all_hashtags(langs: list[str] | None = None) -> dict:
     """Übersetzt alle aktiven Hashtags in die angegebenen (oder alle ~40) Sprachen.
     Nutzt Cache-first: bereits übersetzte Terme werden nicht neu angefragt.
+    Unbekannte Sprachcodes werden stillschweigend übersprungen (kein Absturz).
     Gibt {hashtag_term: count_translated} zurück."""
+    from marktradar import languages as _langs
+    if langs is not None:
+        # WHY: user-supplied codes may include unknowns; skip them instead of crashing
+        langs = [c for c in langs if _langs.by_code(c) is not None]
     active = _conn.execute(
         "SELECT id, term FROM hashtags WHERE active=1"
     ).fetchall()
     summary: dict[str, int] = {}
     for row in active:
-        translations = hashtags.ensure_translations(
-            _conn, row["id"], row["term"], langs
-        )
-        summary[row["term"]] = len(translations)
+        try:
+            translations = hashtags.ensure_translations(
+                _conn, row["id"], row["term"], langs
+            )
+            summary[row["term"]] = len(translations)
+        except Exception as exc:  # WHY: one hashtag failing must not abort the whole batch (matches refresh() pattern)
+            _log.warning("translate_all_hashtags: skipping %r: %s: %s",
+                         row["term"], type(exc).__name__, exc)
     return summary
 
 

@@ -54,6 +54,25 @@ def db_stats() -> dict:
     return query.db_stats(_conn)
 
 
+@mcp.tool()
+def get_entity(name: str, limit: int = 10) -> dict | None:
+    """Profil einer Entität (Träger/Hersteller/Heim) + jüngste verknüpfte Meldungen."""
+    return query.get_entity(_conn, name, limit)
+
+
+@mcp.tool()
+def timeline(name: str, limit: int = 30, event_type: str | None = None) -> list[dict]:
+    """Chronologische Meldungs-Timeline einer Entität, optional nach event_type
+    (insolvenz/expansion/politik/personalie/produkt/auszeichnung/schliessung)."""
+    return query.timeline(_conn, name, limit, event_type)
+
+
+@mcp.tool()
+def list_entities(type: str | None = None, limit: int = 50) -> list[dict]:
+    """Entitäten mit Meldungs-Anzahl (meistgenannte zuerst). type-Filter optional."""
+    return query.list_entities(_conn, type, limit)
+
+
 def main():
     mcp.run()
 

@@ -56,3 +56,56 @@ def db_stats(conn) -> dict:
         "quellen": one("SELECT count(*) FROM sources"),
         "quellen_aktiv": one("SELECT count(*) FROM sources WHERE enabled=1"),
     }
+
+
+def _resolve_entity(conn, name: str):
+    q = f"%{name}%"
+    return conn.execute(
+        "SELECT id,name,type,aliases,region,source FROM entities "
+        "WHERE name = ? COLLATE NOCASE OR name LIKE ? OR aliases LIKE ? "
+        "ORDER BY (name = ? COLLATE NOCASE) DESC LIMIT 1",
+        (name, q, q, name)).fetchone()
+
+
+def get_entity(conn, name: str, limit: int = 10) -> dict | None:
+    """Entitäts-Profil + jüngste verknüpfte Artikel. None wenn unbekannt."""
+    e = _resolve_entity(conn, name)
+    if e is None:
+        return None
+    import json
+    cnt = conn.execute(
+        "SELECT count(*) FROM article_entities WHERE entity_id=?", (e["id"],)).fetchone()[0]
+    arts = [dict(r) for r in conn.execute(
+        "SELECT a.title,a.published,a.event_type,a.link,a.source_domain "
+        "FROM articles a JOIN article_entities ae ON ae.article_id=a.id "
+        "WHERE ae.entity_id=? ORDER BY a.published DESC LIMIT ?", (e["id"], limit)).fetchall()]
+    return {"id": e["id"], "name": e["name"], "type": e["type"],
+            "aliases": json.loads(e["aliases"]) if e["aliases"] else [],
+            "region": e["region"], "source": e["source"],
+            "article_count": cnt, "recent": arts}
+
+
+def timeline(conn, name: str, limit: int = 30, event_type: str | None = None) -> list[dict]:
+    """Chronologische verknüpfte Meldungen einer Entität (optional nach event_type)."""
+    e = _resolve_entity(conn, name)
+    if e is None:
+        return []
+    sql = ("SELECT a.title,a.published,a.event_type,a.kategorie,a.link,a.source_domain "
+           "FROM articles a JOIN article_entities ae ON ae.article_id=a.id "
+           "WHERE ae.entity_id=?")
+    params = [e["id"]]
+    if event_type:
+        sql += " AND a.event_type=?"; params.append(event_type)
+    sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_entities(conn, type: str | None = None, limit: int = 50) -> list[dict]:
+    """Entitäten mit Artikel-Anzahl, meistgenannte zuerst."""
+    sql = ("SELECT e.id,e.name,e.type,e.source,count(ae.article_id) AS articles "
+           "FROM entities e LEFT JOIN article_entities ae ON ae.entity_id=e.id ")
+    params = []
+    if type:
+        sql += "WHERE e.type=? "; params.append(type)
+    sql += "GROUP BY e.id ORDER BY articles DESC, e.name LIMIT ?"; params.append(limit)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]

@@ -24,6 +24,16 @@ CREATE TABLE IF NOT EXISTS articles (
     event_type TEXT, UNIQUE(source_id, guid)
 );
 CREATE INDEX IF NOT EXISTS articles_pub_idx ON articles(published DESC);
+CREATE TABLE IF NOT EXISTS entities (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
+    aliases TEXT, region TEXT, source TEXT
+);
+CREATE TABLE IF NOT EXISTS article_entities (
+    article_id INTEGER REFERENCES articles(id),
+    entity_id INTEGER REFERENCES entities(id),
+    method TEXT,
+    PRIMARY KEY (article_id, entity_id)
+);
 """
 
 VEC_SCHEMA = (

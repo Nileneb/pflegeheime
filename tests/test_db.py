@@ -32,9 +32,9 @@ def test_seed_is_idempotent(conn):
     from marktradar import sources
     n1 = sources.seed(conn)
     n2 = sources.seed(conn)
-    assert n1 == len(sources.TIER1)
+    assert n1 == len(sources.ALL)
     assert n2 == 0  # zweiter Lauf fügt nichts hinzu (UNIQUE url)
-    assert conn.execute("SELECT count(*) c FROM sources").fetchone()["c"] == len(sources.TIER1)
+    assert conn.execute("SELECT count(*) c FROM sources").fetchone()["c"] == len(sources.ALL)
 
 
 def test_param_shim_translates_pyformat(tmp_path, monkeypatch):

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, ddg_images, geo, hashtags, mapillary, organigram, query
+from marktradar import db, ddg_images, geo, hashtags, mapillary, organigram, query, sources
 
 
 def _reskin(body):
@@ -136,6 +136,9 @@ class Handler(BaseHTTPRequestHandler):
                     "tree": organigram.tree(conn, traeger),
                     "persons": organigram.persons(conn, traeger=traeger),
                 })
+            elif u.path == "/api/sources":
+                _json(self, {"sources": sources.stats(
+                    conn, int(q.get("recent_days", ["30"])[0]))})
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
             elif u.path == "/api/hashtags/_debug_extract":
@@ -302,6 +305,16 @@ a{color:inherit;text-decoration:none}
 .row .ti{grid-column:3;color:#e6ebf2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .meta{grid-column:3;font-size:10px;color:var(--mut)}
 .fhash{color:#5b8def;font-size:10px;margin-left:4px}
+.qhint{font-size:11px;color:var(--mut);margin-bottom:12px;max-width:760px;line-height:1.5}
+.qtable{width:100%;border-collapse:collapse;font-size:12px}
+.qtable th{text-align:left;color:var(--mut);font-size:10px;letter-spacing:1px;padding:6px 8px;border-bottom:1px solid var(--ln);font-weight:500}
+.qtable td{padding:6px 8px;border-bottom:1px solid #131c2a;white-space:nowrap}
+.qtable td.num{text-align:right;font-variant-numeric:tabular-nums}
+.qtable tr:hover td{background:#101a2c}
+.qrank{color:var(--mut);width:30px}
+.qbar{display:inline-block;height:6px;border-radius:3px;background:#2ecc71;vertical-align:middle}
+.qbartrk{display:inline-block;width:90px;height:6px;border-radius:3px;background:#16202f;vertical-align:middle;margin-right:6px}
+.qoff td{opacity:.45}
 .row.fresh{background:#0d1f15;border-left:2px solid #2ecc71;padding-left:6px;margin-left:-8px}
 .dt{color:var(--mut);font-size:11px}
 .ev{font-size:9px;border:1px solid;border-radius:3px;padding:2px 4px;text-align:center;letter-spacing:1px}
@@ -429,6 +442,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
   <div class=tab data-t=diskurs>DISKURS</div>
   <div class=tab data-t=timeline>TIMELINE</div>
   <div class=tab data-t=globe>HASHTAG-GLOBUS</div>
+  <div class=tab data-t=quellen>QUELLEN</div>
   <div class=tab data-t=org>ORGANIGRAMM</div>
 </div>
 
@@ -494,6 +508,14 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
         <div id=htsources class=muted>Hashtag oben anklicken…</div>
       </div>
     </div>
+  </div>
+</section>
+
+<section id=quellen class=hide>
+  <div class=panel>
+    <div class=ph><span>QUELLEN-RANKING · dynamische Güte (Wilson-Lower-Bound auf Relevanz-Yield)</span><span class=muted id=qstat></span></div>
+    <div class=qhint>Score = untere Konfidenzgrenze des Relevanz-Anteils. Stabil relevante Quellen mit Volumen steigen; kleine/noisy Quellen sinken in den Bodensatz. Kein Auto-Disable — nur Ranking.</div>
+    <table class=qtable id=qtable></table>
   </div>
 </section>
 
@@ -986,13 +1008,14 @@ $('rksend').onclick=sendReskin;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&SCENE&&!SCENE.controls.isLocked)closeScene();});
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-t]').forEach(x=>x.classList.toggle('on',x===t));
-  ['dash','graph','timeline','diskurs','globe','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
+  ['dash','graph','timeline','diskurs','globe','quellen','org'].forEach(s=>$(s).classList.toggle('hide',s!==t.dataset.t));
   if(t.dataset.t!=='globe'){disposeScene(GLOBE);GLOBE=null;}
   if(t.dataset.t!=='org'){disposeScene(ORG3D);ORG3D=null;}
   if(t.dataset.t==='graph') loadGraph();
   if(t.dataset.t==='timeline') renderTimeline();
   if(t.dataset.t==='diskurs'){loadDiscourseTopic();}
   if(t.dataset.t==='globe') loadGlobe();
+  if(t.dataset.t==='quellen') loadSources();
   if(t.dataset.t==='org') loadOrg();
   if(history.replaceState) history.replaceState(null,'','#'+t.dataset.t);
 });
@@ -1003,6 +1026,31 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 
 async function loadGraph(){renderGraph(await j('api/graph'));}
+async function loadSources(){
+  const d=await j('api/sources'); const rows=d.sources||[];
+  const smax=Math.max(0.01,...rows.map(s=>s.score));
+  const active=rows.filter(s=>s.enabled).length;
+  $('qstat').textContent=`${rows.length} Quellen · ${active} aktiv · Ø-Score ${(rows.reduce((a,s)=>a+s.score,0)/(rows.length||1)).toFixed(3)}`;
+  $('qtable').innerHTML=
+    '<tr><th class=qrank>#</th><th>Quelle</th><th>Reg</th><th>Tier</th>'+
+    '<th class=num>Artikel</th><th class=num>relevant</th><th class=num>Yield</th>'+
+    '<th class=num>30d</th><th>Score</th><th>Status</th></tr>'+
+    rows.map((s,i)=>{
+      const w=Math.round(100*s.score/smax);
+      const col=s.score>=0.5?'#2ecc71':s.score>=0.25?'#f0a830':'#ff6b5b';
+      return `<tr class="${s.enabled?'':'qoff'}">`+
+        `<td class=qrank>${i+1}</td>`+
+        `<td>${esc(s.name)}</td>`+
+        `<td>${esc(s.region||'')}</td>`+
+        `<td class=num>${s.tier||''}</td>`+
+        `<td class=num>${s.total}</td>`+
+        `<td class=num>${s.relevant}</td>`+
+        `<td class=num>${(s.ratio*100).toFixed(0)}%</td>`+
+        `<td class=num>${s.recent}</td>`+
+        `<td><span class=qbartrk><span class=qbar style="width:${w}%;background:${col}"></span></span>${s.score.toFixed(3)}</td>`+
+        `<td class=muted>${esc((s.last_status||'').slice(0,22))}</td></tr>`;
+    }).join('');
+}
 async function refresh(){
   const [o,f]=await Promise.all([j('api/overview'),j('api/feed')]);
   renderOverview(o); renderFeed(f);

@@ -3,8 +3,15 @@
 
 Tier 1 = laufender Newsstrom (Politik/Institutionen/Träger/Fachpresse).
 Tier 2 = langsamere Spezialquellen (Hersteller/Software).
+Tier 3 = internationale Wissenschaft (Journals/Institute, EN, langsamer Takt).
 presseportal = news aktuell (dpa-Tochter): Themen-Feeds (st/…) + Firmen-Feeds (pm_…).
-Quellenübergreifende Link-Dedup im Ingest fängt geteilte presseportal-Artikel ab."""
+Quellenübergreifende Link-Dedup im Ingest fängt geteilte presseportal-Artikel ab.
+
+`tier` ist die manuelle Start-Einstufung; die LAUFENDE Güte kommt dynamisch aus
+`stats()` (Wilson-Lower-Bound auf dem Relevanz-Yield) — stabil relevante Quellen
+steigen über Volumen langfristig nach oben, Noise sinkt in den Bodensatz."""
+import math
+from datetime import datetime, timedelta, timezone
 
 
 def _f(name, url, region="DE", tier=1):
@@ -96,16 +103,102 @@ TIER1 = [
 ]
 
 
+# ── Tier 3: internationale Wissenschaft (Journals/Institute, EN/DE) ──────────
+# Am 2026-06-08 live verifiziert (>=3 Feed-Entries). Langsamerer Takt, oft EN —
+# die Relevanz-Klassifikation + der dynamische Score (stats()) sortieren ab, was
+# nicht ins Pflege-/Gesundheits-/Sozial-Spektrum passt.
+TIER3 = [
+    # Open-Access-Journals (PLOS / BMJ)
+    _f("PLOS Medicine", "https://journals.plos.org/plosmedicine/feed/atom", "INT", 3),
+    _f("PLOS Global Public Health", "https://journals.plos.org/globalpublichealth/feed/atom", "INT", 3),
+    _f("PLOS ONE", "https://journals.plos.org/plosone/feed/atom", "INT", 3),
+    _f("BMJ Open", "https://bmjopen.bmj.com/rss/current.xml", "INT", 3),
+    # Lancet-Familie
+    _f("The Lancet", "https://www.thelancet.com/rssfeed/lancet_current.xml", "INT", 3),
+    _f("Lancet Public Health", "https://www.thelancet.com/rssfeed/lanpub_current.xml", "INT", 3),
+    _f("Lancet Healthy Longevity", "https://www.thelancet.com/rssfeed/lanhl_current.xml", "INT", 3),
+    _f("Lancet Global Health", "https://www.thelancet.com/rssfeed/langlo_current.xml", "INT", 3),
+    # Elsevier ScienceDirect (Pflege-/Sozialwissenschaft)
+    _f("Int. J. Nursing Studies", "https://rss.sciencedirect.com/publication/science/00207489", "INT", 3),
+    _f("Social Science & Medicine", "https://rss.sciencedirect.com/publication/science/02779536", "INT", 3),
+    _f("Archives of Gerontology and Geriatrics", "https://rss.sciencedirect.com/publication/science/01674943", "INT", 3),
+    # Wiley
+    _f("Journal of Advanced Nursing", "https://onlinelibrary.wiley.com/feed/13652648/most-recent", "INT", 3),
+    # Springer (BMC + Gerontologie/Public Health; DE-Journals besonders on-topic)
+    _f("BMC Geriatrics", "https://link.springer.com/search.rss?facet-journal-id=12877", "INT", 3),
+    _f("BMC Nursing", "https://link.springer.com/search.rss?facet-journal-id=12912", "INT", 3),
+    _f("BMC Health Services Research", "https://link.springer.com/search.rss?facet-journal-id=12913", "INT", 3),
+    _f("BMC Public Health", "https://link.springer.com/search.rss?facet-journal-id=12889", "INT", 3),
+    _f("European Journal of Ageing", "https://link.springer.com/search.rss?facet-journal-id=10433", "INT", 3),
+    _f("Aging Clinical and Experimental Research", "https://link.springer.com/search.rss?facet-journal-id=40520", "INT", 3),
+    _f("GeroScience", "https://link.springer.com/search.rss?facet-journal-id=11357", "INT", 3),
+    _f("European Journal of Epidemiology", "https://link.springer.com/search.rss?facet-journal-id=10654", "INT", 3),
+    _f("International Journal of Public Health", "https://link.springer.com/search.rss?facet-journal-id=38", "INT", 3),
+    _f("Quality of Life Research", "https://link.springer.com/search.rss?facet-journal-id=11136", "INT", 3),
+    _f("Journal of Public Health (Springer)", "https://link.springer.com/search.rss?facet-journal-id=10389", "INT", 3),
+    _f("Zeitschrift für Gerontologie und Geriatrie", "https://link.springer.com/search.rss?facet-journal-id=391", "DE", 3),
+    _f("Prävention und Gesundheitsförderung", "https://link.springer.com/search.rss?facet-journal-id=11553", "DE", 3),
+    _f("Bundesgesundheitsblatt", "https://link.springer.com/search.rss?facet-journal-id=103", "DE", 3),
+    # Policy-Institute
+    _f("Commonwealth Fund", "https://www.commonwealthfund.org/rss.xml", "INT", 3),
+]
+
+ALL = TIER1 + TIER3
+
+
 def seed(conn) -> int:
-    """Fügt Tier-1-Quellen ein (UNIQUE url → idempotent). Gibt Anzahl NEUER Zeilen zurück."""
+    """Fügt alle Seed-Quellen (Tier 1+3) ein (UNIQUE url → idempotent).
+    Gibt Anzahl NEUER Zeilen zurück."""
     n = 0
-    for s in TIER1:
+    for s in ALL:
         cur = conn.execute(
             "INSERT OR IGNORE INTO sources(name,type,url,tier,region,enabled) "
             "VALUES (?,?,?,?,?,1)", (s["name"], s["type"], s["url"], s["tier"], s["region"]))
         n += cur.rowcount
     conn.commit()
     return n
+
+
+def _wilson(pos: int, n: int, z: float = 1.96) -> float:
+    """Untere Grenze des Wilson-Konfidenzintervalls für den Relevanz-Anteil.
+    WHY: belohnt ANHALTENDE Relevanz mit Volumen — 200 Artikel @60% schlagen 5 @80%
+    (kleine Stichprobe = breite Unsicherheit = niedrige Untergrenze). Genau das
+    Verhalten 'stabil relevante Quellen setzen sich langfristig durch'."""
+    if n <= 0:
+        return 0.0
+    phat = pos / n
+    denom = 1 + z * z / n
+    centre = phat + z * z / (2 * n)
+    margin = z * math.sqrt((phat * (1 - phat) + z * z / (4 * n)) / n)
+    return max(0.0, (centre - margin) / denom)
+
+
+def stats(conn, recent_days: int = 30) -> list[dict]:
+    """Dynamische Quellen-Güte: je Quelle Volumen, Relevanz-Yield, Recency und ein
+    Wilson-Score. Absteigend nach (score, recent, total) sortiert → Top-Quellen oben,
+    Noise im Bodensatz. Auto-Disable findet NICHT statt (soft ranking)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=recent_days)).isoformat()
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.region, s.tier, s.enabled, s.last_status, s.last_fetched, "
+        "  COUNT(a.id) AS total, "
+        "  SUM(CASE WHEN a.relevant=1 THEN 1 ELSE 0 END) AS relevant, "
+        "  SUM(CASE WHEN a.published >= ? THEN 1 ELSE 0 END) AS recent "
+        "FROM sources s LEFT JOIN articles a ON a.source_id = s.id "
+        "GROUP BY s.id", (cutoff,)).fetchall()
+    out = []
+    for r in rows:
+        total = r["total"] or 0
+        rel = r["relevant"] or 0
+        out.append({
+            "id": r["id"], "name": r["name"], "region": r["region"], "tier": r["tier"],
+            "enabled": r["enabled"], "last_status": r["last_status"],
+            "last_fetched": r["last_fetched"], "total": total, "relevant": rel,
+            "recent": r["recent"] or 0,
+            "ratio": round(rel / total, 3) if total else 0.0,
+            "score": round(_wilson(rel, total), 4),
+        })
+    out.sort(key=lambda x: (x["score"], x["recent"], x["total"]), reverse=True)
+    return out
 
 
 def verify(conn) -> list[dict]:

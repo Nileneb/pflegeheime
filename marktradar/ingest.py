@@ -103,6 +103,10 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
         q += " AND (name LIKE ? OR url LIKE ?)"
         params += [f"%{source_filter}%", f"%{source_filter}%"]
     srcs = conn.execute(q, params).fetchall()
+    # Güte-Reihenfolge: stabil relevante Quellen zuerst (zählt bei limit/Abbruch).
+    from marktradar import sources as _sources
+    rank = {s["id"]: i for i, s in enumerate(_sources.stats(conn))}
+    srcs = sorted(srcs, key=lambda s: rank.get(s["id"], 10**6))
 
     new_total, errors, new_ids = 0, [], []
     now = datetime.now(timezone.utc).isoformat()

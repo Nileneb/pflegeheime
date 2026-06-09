@@ -93,6 +93,26 @@ CREATE TABLE IF NOT EXISTS building_photos (
     rank INTEGER NOT NULL DEFAULT 0, chosen INTEGER NOT NULL DEFAULT 0, created TEXT,
     UNIQUE(unit_id, path)
 );
+CREATE TABLE IF NOT EXISTS watched_accounts (
+    id INTEGER PRIMARY KEY,
+    platform TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    account_id TEXT,
+    entity_id INTEGER REFERENCES entities(id),
+    label TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    added TEXT,
+    UNIQUE(platform, handle)
+);
+CREATE TABLE IF NOT EXISTS watched_posts (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES watched_accounts(id),
+    entity_id INTEGER REFERENCES entities(id),
+    url TEXT NOT NULL,
+    author TEXT, content TEXT,
+    lat REAL, lon REAL, published TEXT, fetched_at TEXT,
+    UNIQUE(account_id, url)
+);
 """
 
 VEC_SCHEMA = (

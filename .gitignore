@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 output/
+out/buildings/
 scraper.log
 .env
 .~lock.*

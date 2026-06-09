@@ -71,6 +71,7 @@ def _import_osm(bbox, terrain, *, mode="3Dsimple"):
     b.water = True
     b.forests = True
     b.vegetation = True
+    b.singleObject = False  # WHY: Einzelgebäude-Objekte → render_orbit kann auf die Einrichtung framen
     b.relativeToInitialImport = True
     if terrain is not None:
         b.terrainObject = terrain.name
@@ -81,21 +82,28 @@ def _import_osm(bbox, terrain, *, mode="3Dsimple"):
 
 
 def _setup_world():
-    """Sonne (Tageswinkel) + neutrale graue World für klare, neutrale Render-Basis."""
+    """Sonne (Tageswinkel) + gedämpfter Himmel + AgX-Filmic-Tonemapping. WHY: neutrale graue
+    World @ Stärke 1.0 + harte Sonne floutet die hellen Default-Materialien aus (kein Kontrast)."""
     import bpy
     import math as _m
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 3.0
+    sun_data.energy = 2.0
     sun = bpy.data.objects.new("Sun", sun_data)
     bpy.context.collection.objects.link(sun)
-    sun.rotation_euler = (_m.radians(50), 0.0, _m.radians(35))
+    sun.rotation_euler = (_m.radians(55), 0.0, _m.radians(40))
     world = bpy.context.scene.world or bpy.data.worlds.new("World")
     bpy.context.scene.world = world
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (0.6, 0.62, 0.65, 1.0)
-        bg.inputs[1].default_value = 1.0
+        bg.inputs[0].default_value = (0.16, 0.22, 0.30, 1.0)  # gedämpfter blauer Himmel als Fill
+        bg.inputs[1].default_value = 0.35
+    vs = bpy.context.scene.view_settings
+    try:
+        vs.view_transform = "AgX"  # Filmic-Rolloff gegen Ausbrennen
+        vs.look = "AgX - Medium High Contrast"
+    except TypeError:  # WHY: älterer Build ohne AgX → Filmic als Fallback, nicht hart fehlschlagen
+        vs.view_transform = "Filmic"
 
 
 def build_scene(lat, lon, radius_m=320, *, terrain=True):

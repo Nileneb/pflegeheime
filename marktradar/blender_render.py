@@ -22,14 +22,52 @@ def write_manifest(out_dir, rows):
     return path
 
 
-def _scene_center_and_size():
-    """Mittelpunkt + größte Ausdehnung aller Mesh-Objekte (Welt-Koordinaten)."""
+def _frame_objects():
+    """Objekte, auf die der Orbit framen soll: gebäudeartig (extrudiert, Z-Höhe > 2m) statt
+    flacher Layer (Straßen/Wald/Wasser). Blosm benennt Einzelgebäude generisch ('element.NNN'),
+    daher geometrische statt namensbasierte Klassifikation. Terrain wird als Boden ignoriert."""
     import bpy
     from mathutils import Vector
-    pts = []
+    out = []
     for o in bpy.data.objects:
-        if o.type != "MESH":
+        if o.type != "MESH" or o.name.startswith("Terrain"):
             continue
+        zs = [(o.matrix_world @ Vector(c)).z for c in o.bound_box]
+        # extrudiert (Häuser) UND kein Riesen-Footprint (Parkplatz/Landuse-Outline mit Mini-Höhe)
+        if max(zs) - min(zs) > 2.0 and max(o.dimensions.x, o.dimensions.y) < 120.0:
+            out.append(o)
+    return out
+
+
+def _world_bbox_center(o):
+    from mathutils import Vector
+    cs = [o.matrix_world @ Vector(c) for c in o.bound_box]
+    return sum(cs, Vector()) / 8.0
+
+
+def _apply_solid_look():
+    """Workbench-Solid-Darstellung (= der klare Solid-Viewport-Look statt ausgebranntem EEVEE):
+    Studio-Licht + Cavity + Schatten + Blosms eigene Material-Farben (grüner Wald, Lehm-Gebäude,
+    graue Wege). WHY: EEVEE brennt die Default-Materialien aus; Workbench/MATERIAL liest klar."""
+    import bpy
+    sh = bpy.context.scene.display.shading
+    sh.light = "STUDIO"
+    sh.color_type = "MATERIAL"  # Blosms kuratierte Feature-Farben nutzen
+    sh.show_cavity = True
+    sh.cavity_type = "BOTH"
+    sh.show_shadows = True
+    bpy.context.scene.view_settings.view_transform = "Standard"  # Solid-Look ohne Filmic-Mute
+
+
+def _scene_center_and_size(focus_m=45.0):
+    """Frame auf die Einrichtung: gebäudeartige Objekte innerhalb focus_m vom bbox-Zentrum
+    (= Einrichtung, da die bbox darauf zentriert ist). So bleibt das Gebäude groß im Bild,
+    auch wenn drumherum ein weites Viertel geladen ist. Welt-Koordinaten."""
+    from mathutils import Vector
+    blds = _frame_objects()
+    near = [o for o in blds if _world_bbox_center(o).xy.length <= focus_m] or blds
+    pts = []
+    for o in near:
         for c in o.bound_box:
             pts.append(o.matrix_world @ Vector(c))
     if not pts:
@@ -39,19 +77,22 @@ def _scene_center_and_size():
     return (lo + hi) / 2, max((hi - lo).x, (hi - lo).y, (hi - lo).z, 10.0)
 
 
-def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20):
-    """Kamera-Orbit um die Szenen-Mitte, n_views Renders → view_NN.png. Manifest-Rows zurück."""
+def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20, focus_m=45.0):
+    """Kamera-Orbit um das Einrichtungs-Gebäude, n_views Renders → view_NN.png. Manifest-Rows
+    zurück. focus_m = Radius um das bbox-Zentrum, in dem Gebäude fürs Framing zählen — ein zu
+    weiter Load würde die Einrichtung sonst zum Fleck schrumpfen."""
     import bpy
     import math as _m
     import datetime as _dt
     from mathutils import Vector
     os.makedirs(out_dir, exist_ok=True)
     scene = bpy.context.scene
-    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.render.engine = "BLENDER_WORKBENCH"
     scene.render.resolution_x, scene.render.resolution_y = resolution
     scene.render.image_settings.file_format = "PNG"
+    _apply_solid_look()
 
-    center, size = _scene_center_and_size()
+    center, size = _scene_center_and_size(focus_m)
     dist = size * 1.6
     z = center.z + dist * _m.sin(_m.radians(elevation_deg))
     flat = dist * _m.cos(_m.radians(elevation_deg))

@@ -315,6 +315,23 @@ def regeocode_posts(only_missing: bool = False) -> dict:
 
 
 @mcp.tool()
+def watch_add(platform: str, handle: str, entity_id: int | None = None,
+              label: str | None = None) -> dict:
+    """Beobachte einen Akteur-Account (mastodon/bluesky). Optional mit entity_id
+    verknüpfen (Akteur×Thema) und Label. Idempotent (platform+handle UNIQUE)."""
+    from marktradar import watch
+    return watch.add(_conn, platform, handle, entity_id=entity_id, label=label)
+
+
+@mcp.tool()
+def watch_refresh() -> dict:
+    """Holt die letzten Posts aller aktiven beobachteten Accounts in watched_posts
+    (idempotent). Fehler je Account isoliert im Report."""
+    from marktradar import watch
+    return watch.refresh(_conn)
+
+
+@mcp.tool()
 def tag_news_hashtags(auto_create: bool = False, limit: int = 400) -> dict:
     """Verknüpft News-Artikel mit Hashtags (matcht aktive Hashtags). auto_create=True:
     relevante Artikel ohne Treffer bekommen per LLM ein neues Themen-Hashtag (Event wird

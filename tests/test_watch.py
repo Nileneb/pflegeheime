@@ -104,3 +104,8 @@ def test_map_data_includes_watched_points_and_actor_stream(conn):
     assert any(p["url"] == "https://m/rki/1" and p["kind"] == "watch" for p in d["watched"])
     pt = next(p for p in d["watched"] if p["url"] == "https://m/rki/1")
     assert pt["entity"] == "RKI" and pt["color"] == d["actor_colors"]["behoerde"]
+
+
+def test_server_exposes_watch_tools():
+    import marktradar.server as s
+    assert hasattr(s, "watch_add") and hasattr(s, "watch_refresh")

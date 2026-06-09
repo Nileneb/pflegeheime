@@ -884,14 +884,29 @@ def map_data(conn, max_points=1500):
             if canonical:
                 translations.setdefault(canonical, {})[r["lang_code"]] = r["term"]
 
-    conns = connections(conn, trends_result=tr)
     from marktradar import entities
+    watched = []
+    for r in conn.execute(
+            "SELECT wp.url, wp.author, wp.content, wp.lat, wp.lon, wp.published, "
+            "e.name AS entity, e.type AS etype "
+            "FROM watched_posts wp "
+            "LEFT JOIN entities e ON e.id = wp.entity_id "
+            "WHERE wp.lat IS NOT NULL "
+            "ORDER BY wp.published DESC LIMIT 500").fetchall():
+        watched.append({
+            "kind": "watch", "url": r["url"], "author": r["author"],
+            "content": r["content"], "lat": r["lat"], "lon": r["lon"],
+            "published": r["published"], "entity": r["entity"],
+            "color": entities.ACTOR_COLORS.get(r["etype"], "#9fb0c8"),
+        })
+    conns = connections(conn, trends_result=tr)
     return {
         "legend": legend,
         "points": points,
         "sources": sources,
         "actors": entities.actors_for_hashtags(conn),  # Akteur×Thema je Hashtag
         "actor_colors": entities.ACTOR_COLORS,
+        "watched": watched,
         "trends": tr["pairs"],
         "connections": conns["arcs"],
         "connections_truncated": conns["truncated"],

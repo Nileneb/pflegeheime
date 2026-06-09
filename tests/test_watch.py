@@ -1,5 +1,7 @@
 """Tests für den Social-Watcher."""
 
+from marktradar import hashtags
+
 
 def test_watched_tables_exist(conn):
     cols_a = {r["name"] for r in conn.execute("PRAGMA table_info(watched_accounts)")}
@@ -87,3 +89,18 @@ def test_refresh_isolates_account_errors(conn, monkeypatch):
     res = watch.refresh(conn)
     assert res["added"] == 1
     assert any("a" in e for e in res["errors"])
+
+
+def test_map_data_includes_watched_points_and_actor_stream(conn):
+    conn.execute("INSERT INTO hashtags(id,term,color,active) VALUES (1,'Pflege','#fff',1)")
+    conn.execute("INSERT INTO entities(id,name,type) VALUES (1,'RKI','behoerde')")
+    acc = watch.add(conn, "mastodon", "rki", entity_id=1)
+    conn.execute(
+        "INSERT INTO watched_posts(account_id,entity_id,url,author,content,lat,lon,published,fetched_at)"
+        " VALUES (?,1,'https://m/rki/1','rki','news',52.5,13.4,'2026-06-09T10:00:00Z','x')",
+        (acc["id"],))
+    conn.commit()
+    d = hashtags.map_data(conn)
+    assert any(p["url"] == "https://m/rki/1" and p["kind"] == "watch" for p in d["watched"])
+    pt = next(p for p in d["watched"] if p["url"] == "https://m/rki/1")
+    assert pt["entity"] == "RKI" and pt["color"] == d["actor_colors"]["behoerde"]

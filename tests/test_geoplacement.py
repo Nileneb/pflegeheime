@@ -73,7 +73,7 @@ def test_regeocode_places_unlocated_posts(conn):
 
 
 # ── map_data Anreicherung ────────────────────────────────────────────────────
-def test_map_data_points_carry_score_and_sources_sorted(conn):
+def test_map_data_points_are_slim_and_sources_sorted(conn):
     conn.execute("INSERT INTO hashtags(id,term,color,active) VALUES (1,'Pflege','#fff',1)")
     _add_post(conn, 1, url="https://rki.de/a", author="RKI", location_text="RKI",
               lang_code="de", lat=52.5, lon=13.4)
@@ -81,10 +81,12 @@ def test_map_data_points_carry_score_and_sources_sorted(conn):
               source="bluesky", lang_code="ar", lat=25.0, lon=45.0)
     data = hashtags.map_data(conn)
     assert data["points"], "points should be present"
+    # Punkte sind schlank (nur was der Globus rendert) — score/trust/content NICHT mehr dabei.
     for pt in data["points"]:
-        assert "score" in pt and "trust" in pt and "lang_tier" in pt
+        assert set(pt) == {"lat", "lon", "color", "term", "url", "weight", "published"}
     srcs = data["sources"][1]
-    # deutsche Institution muss vor fremdsprachigem Social-Post stehen
+    # Die reiche QC-Quellenliste trägt weiterhin score/trust: deutsche Institution vor
+    # fremdsprachigem Social-Post.
     assert srcs[0]["url"] == "https://rki.de/a"
     assert srcs[0]["score"] >= srcs[-1]["score"]
     assert srcs[0]["trust"] == "institution"

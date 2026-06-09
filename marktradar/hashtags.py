@@ -816,7 +816,12 @@ def ensure_translations(conn, hashtag_id: int, term: str,
 
 
 # ── Map-Daten für den Globus ──
-def map_data(conn, max_points=1500):
+_MAP_POINTS_DEFAULT = int(os.getenv("PFLEGE_MAP_POINTS", "25000"))
+
+
+def map_data(conn, max_points=None):
+    if max_points is None:
+        max_points = _MAP_POINTS_DEFAULT
     tags = {r["id"]: dict(r) for r in conn.execute(
         "SELECT id,term,color,active FROM hashtags").fetchall()}
     counts = {}
@@ -835,23 +840,23 @@ def map_data(conn, max_points=1500):
                        "cooc": w.get("cooc", 0), "weight": w.get("weight", 0)})
     legend.sort(key=lambda x: -(x["weight"] + x["count"]))
     from marktradar import ranking
+    # WHY: Punkt-Payload schlank halten — der Globus liest pro Punkt nur
+    # lat/lon/color/term/url/weight/published. content/author/score_post sind hier toter
+    # Ballast (score_post = 25k Gazetteer-Lookups). Die reiche QC-Liste unten bleibt davon
+    # unberührt. Slim-Payload macht 25k Punkte erst tragbar (~2-3× kleineres JSON).
     rows = conn.execute(
-        "SELECT p.hashtag_id,p.source,p.url,p.author,p.content,p.lat,p.lon,p.published,"
-        "p.lang_code,p.location_text "
+        "SELECT p.hashtag_id,p.url,p.lat,p.lon,p.published "
         "FROM hashtag_posts p WHERE p.lat IS NOT NULL "
         "ORDER BY p.published DESC LIMIT ?", (max_points,)).fetchall()
     points = []
     for r in rows:
         t = tags.get(r["hashtag_id"], {})
         wn = (W.get(r["hashtag_id"], {}).get("weight", 0) / maxw) if maxw else 0
-        sc = ranking.score_post(dict(r))
         points.append({
             "lat": r["lat"], "lon": r["lon"], "color": t.get("color", "#5b8def"),
-            "term": t.get("term", "?"), "source": r["source"], "url": r["url"],
-            "author": r["author"], "content": r["content"], "published": r["published"],
-            "weight": round(wn, 3),  # 0..1 Trend-Stärke → Pulsieren
-            "score": sc["score"], "trust": sc["trust"], "lang_tier": sc["lang_tier"],
-            "geo_precise": sc["geo_precise"],
+            "term": t.get("term", "?"), "url": r["url"],
+            "published": r["published"],
+            "weight": round(wn, 3),  # 0..1 Trend-Stärke → Punktgröße
         })
     # QC-Quellenliste je Hashtag: lesbare + vertrauenswürdige Posts nach oben (Score),
     # damit der Leser oben anfangen kann — fremdsprachig/anonym bleibt erfasst, rutscht runter.

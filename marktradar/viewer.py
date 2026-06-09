@@ -704,6 +704,7 @@ function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.s
     if(h._mmHandler&&h.renderer)h.renderer.domElement.removeEventListener('mousemove',h._mmHandler);
     if(h._mlHandler&&h.renderer)h.renderer.domElement.removeEventListener('mouseleave',h._mlHandler);
     if(h.arcs)h.arcs.forEach(o=>{o.tube.geometry.dispose();o.tubeMat.dispose();o.glow.geometry.dispose();o.glowMat.dispose();});
+    if(h.cloudGeo)h.cloudGeo.dispose();if(h.cloudMat)h.cloudMat.dispose();
     if(h.langTex)h.langTex.dispose();if(h.langMat)h.langMat.dispose();if(h.langGeo)h.langGeo.dispose();
     if(h.renderer){h.renderer.dispose();const d=h.renderer.domElement;if(d&&d.parentNode)d.parentNode.removeChild(d);}}}
 
@@ -726,6 +727,22 @@ function ageDecay(published){
   if(isNaN(t))return 1;                                  // missing/invalid → treat as fresh
   const ageDays=(Date.now()-t)/86400000;
   return Math.max(0,1-ageDays/POST_EXPIRY_DAYS);
+}
+// Radiales Glow-Sprite (Kern→Halo→transparent) — ersetzt das alte body+halo-Mesh-Paar
+// durch EINE Punkt-Textur. Modul-global, einmal gebaut, von allen Globen geteilt.
+let _GLOW_TEX=null;
+function glowSprite(){
+  if(_GLOW_TEX)return _GLOW_TEX;
+  const S=64,cv=document.createElement('canvas');cv.width=cv.height=S;
+  const g=cv.getContext('2d');const grd=g.createRadialGradient(S/2,S/2,0,S/2,S/2,S/2);
+  grd.addColorStop(0.0,'rgba(255,255,255,1)');
+  grd.addColorStop(0.22,'rgba(255,255,255,0.85)');
+  grd.addColorStop(0.55,'rgba(255,255,255,0.28)');
+  grd.addColorStop(1.0,'rgba(255,255,255,0)');
+  g.fillStyle=grd;g.fillRect(0,0,S,S);
+  _GLOW_TEX=new THREE.CanvasTexture(cv);
+  _GLOW_TEX.minFilter=THREE.LinearFilter;_GLOW_TEX.magFilter=THREE.LinearFilter;
+  return _GLOW_TEX;
 }
 
 // ── Point-in-Polygon (ray-casting, lon/lat, handles Polygon+MultiPolygon+holes) ──
@@ -757,17 +774,18 @@ function resolveCountryIso(lon,lat,features){
   }
   return null;
 }
-function precomputeMarkerLangs(markers,lgData,htLangs){
-  // Build lang code set for fast fallback check.
+function precomputeMarkerLangs(latArr,lonArr,langsOut,n,lgData,htLangs){
+  // Füllt langs[] indexparallel zur Punktwolke (statt mesh.userData.lang).
   const validLangs=new Set((htLangs||[]).map(l=>l.code));
   const features=(lgData&&lgData.geojson&&lgData.geojson.features)||[];
   const clMap=(lgData&&lgData.country_language)||{};
-  markers.forEach(m=>{
-    const iso=resolveCountryIso(m.userData.lon,m.userData.lat,features);
+  const fallback=validLangs.has('en')?'en':(validLangs.size?[...validLangs][0]:'de');
+  for(let i=0;i<n;i++){
+    const iso=resolveCountryIso(lonArr[i],latArr[i],features);
     let lang=iso?clMap[iso]:null;
-    if(!lang||!validLangs.has(lang))lang=validLangs.has('en')?'en':(validLangs.size?[...validLangs][0]:'de');
-    m.userData.lang=lang;
-  });
+    if(!lang||!validLangs.has(lang))lang=fallback;
+    langsOut[i]=lang;
+  }
 }
 // Soft language overlay: paint country polygons by language color onto an equirect
 // canvas, blur it, drape as a translucent texture on a sphere slightly above earth.
@@ -894,22 +912,42 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     renderLangLegend((HTDATA&&HTDATA.languages)||[]);
   })();
   const group=new THREE.Group();scene.add(group);
+  // ── GPU-gebatchte Punktwolke: EIN THREE.Points statt 2 Meshes/Punkt (skaliert auf 25k+) ──
   const buckets={};points.forEach(p=>{const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);buckets[k]=(buckets[k]||0)+1;});
-  const pgeo=new THREE.SphereGeometry(1,8,8);
-  let _expired=0;
-  points.forEach(p=>{const decay=ageDecay(p.published);
-    if(decay<0.05){_expired++;return;}                   // nearly/fully expired → skip (avoids phantom raycasting targets)
-    const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);const inten=Math.min(1,(buckets[k]||1)/5);
-    const col=new THREE.Color(p.color||'#5b8def');const pos=ll2v(p.lat,p.lon,1.012);
-    const w=p.weight||0;const base=(0.006+0.013*inten)*(0.7+1.1*w);  // Trend-Gewicht → Größe (konstant)
-    // Quellen sind RUHIG: Helligkeit fix aus Gewicht, kein Sweep. Aufblinken passiert nur auf den Arcs.
-    // Alter dämpft die ruhige Helligkeit (kein Puls) → frische Posts leuchten, alte verblassen.
-    const bright=(0.55+0.45*w)*decay;
-    const m=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col.clone().multiplyScalar(bright)}));
-    m.position.copy(pos);m.scale.setScalar(base);
-    m.userData={url:p.url,base,weight:w,term:p.term,lat:p.lat,lon:p.lon};group.add(m);
-    const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:(0.16+0.12*w)*decay,blending:THREE.AdditiveBlending,depthWrite:false}));
-    halo.position.copy(pos);halo.scale.setScalar(base*2.7);halo.userData={host:m};group.add(halo);});
+  let _N=0,_expired=0;const _keep=new Array(points.length);
+  for(let i=0;i<points.length;i++){const d=ageDecay(points[i].published);_keep[i]=d;if(d>=0.05)_N++;else _expired++;}
+  const positions=new Float32Array(_N*3),pcolors=new Float32Array(_N*3),psizes=new Float32Array(_N);
+  const urls=new Array(_N),terms=new Array(_N),langs=new Array(_N);
+  const ptLat=new Float32Array(_N),ptLon=new Float32Array(_N);
+  const _c=new THREE.Color();let j=0,_sizeSum=0;
+  for(let i=0;i<points.length;i++){const decay=_keep[i];if(decay<0.05)continue;
+    const p=points[i];const k=p.term+Math.round(p.lat)+','+Math.round(p.lon);
+    const inten=Math.min(1,(buckets[k]||1)/5);const w=p.weight||0;
+    const base=(0.006+0.013*inten)*(0.7+1.1*w);   // Trend-Gewicht → Größe (wie zuvor)
+    const bright=(0.55+0.45*w)*decay;             // Alter dämpft Helligkeit (wie zuvor)
+    const pos=ll2v(p.lat,p.lon,1.012);
+    positions[j*3]=pos.x;positions[j*3+1]=pos.y;positions[j*3+2]=pos.z;
+    _c.set(p.color||'#5b8def').multiplyScalar(bright);
+    pcolors[j*3]=_c.r;pcolors[j*3+1]=_c.g;pcolors[j*3+2]=_c.b;
+    psizes[j]=base;_sizeSum+=base;
+    urls[j]=p.url;terms[j]=p.term;ptLat[j]=p.lat;ptLon[j]=p.lon;j++;}
+  const _avgSize=_N?_sizeSum/_N:0.01;
+  const cloudGeo=new THREE.BufferGeometry();
+  cloudGeo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  cloudGeo.setAttribute('color',new THREE.BufferAttribute(pcolors,3));
+  cloudGeo.setAttribute('size',new THREE.BufferAttribute(psizes,1));
+  const cloudMat=new THREE.ShaderMaterial({
+    uniforms:{uTex:{value:glowSprite()},uZoom:{value:1.0},uPx:{value:(el.clientHeight||600)}},
+    vertexShader:'attribute float size;attribute vec3 color;varying vec3 vColor;uniform float uZoom;uniform float uPx;'+
+      'void main(){vColor=color;vec4 mv=modelViewMatrix*vec4(position,1.0);'+
+      'float att=uPx/max(0.0001,-mv.z);gl_PointSize=clamp(size*uZoom*att,1.0,64.0);'+
+      'gl_Position=projectionMatrix*mv;}',
+    fragmentShader:'uniform sampler2D uTex;varying vec3 vColor;'+
+      'void main(){vec4 s=texture2D(uTex,gl_PointCoord);if(s.a<0.01)discard;'+
+      'gl_FragColor=vec4(vColor*s.rgb,s.a);}',
+    transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:true,
+  });
+  const cloud=new THREE.Points(cloudGeo,cloudMat);group.add(cloud);
   // Watched-Akteur-Posts: eigener Marker-Typ (Oktaeder), Farbe nach Entitäts-Typ.
   const wgeo=new THREE.OctahedronGeometry(1,0);
   ((HTDATA&&HTDATA.watched)||[]).forEach(w=>{
@@ -990,30 +1028,33 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     arcGroup.visible=ARCS_ON;
   })();
   const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
-  renderer.domElement.addEventListener('click',ev=>{const r=renderer.domElement.getBoundingClientRect();
-    mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
-    ray.setFromCamera(mouse,camera);const hit=ray.intersectObjects(group.children).find(o=>o.object.userData.url);
-    if(hit)window.open(hit.object.userData.url,'_blank');});
-  // ── Localized hover tooltip ──
-  const gtip=document.getElementById('globetip');
-  // Collect only the source marker meshes (they have .userData.term; halos have .userData.host).
-  const srcMarkers=group.children.filter(m=>m.userData.term);
-  let _mmLast=0;
-  const _mmHandler=ev=>{
-    const now=Date.now();if(now-_mmLast<40)return;_mmLast=now;  // ~25fps throttle
+  // Watched-Marker bleiben echte Meshes (präzises Picking); die Punktwolke wird über
+  // raycaster.params.Points.threshold + .index getroffen → parallele Arrays urls/terms/langs.
+  const watchedMeshes=group.children.filter(o=>o.isMesh&&o.userData&&o.userData.url);
+  function pickAt(ev){
     const r=renderer.domElement.getBoundingClientRect();
     mouse.x=((ev.clientX-r.left)/r.width)*2-1;mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
     ray.setFromCamera(mouse,camera);
-    const hits=ray.intersectObjects(srcMarkers);
-    const hit=hits.length?hits[0]:null;
+    const wh=ray.intersectObjects(watchedMeshes);
+    if(wh.length)return {url:wh[0].object.userData.url,term:wh[0].object.userData.term||'',lang:'de'};
+    const ph=ray.intersectObject(cloud);
+    if(ph.length){const i=ph[0].index;return {url:urls[i],term:terms[i],lang:langs[i]||'de'};}
+    return null;
+  }
+  renderer.domElement.addEventListener('click',ev=>{const hit=pickAt(ev);if(hit&&hit.url)window.open(hit.url,'_blank');});
+  // ── Localized hover tooltip ──
+  const gtip=document.getElementById('globetip');
+  let _mmLast=0;
+  const _mmHandler=ev=>{
+    const now=Date.now();if(now-_mmLast<40)return;_mmLast=now;  // ~25fps throttle
+    const hit=pickAt(ev);
     if(hit){
-      const ud=hit.object.userData;
-      const lang=ud.lang||'de';
-      const translations=(HTDATA&&HTDATA.translations&&HTDATA.translations[ud.term])||{};
+      const lang=hit.lang||'de';
+      const translations=(HTDATA&&HTDATA.translations&&HTDATA.translations[hit.term])||{};
       const localized=translations[lang];
       let label;
-      if(localized&&localized!==ud.term){label='<b>'+esc(localized)+'</b><span style="color:var(--mut);font-size:10px"> (#'+esc(ud.term)+')</span>';}
-      else{label='<b>#'+esc(ud.term)+'</b>';}
+      if(localized&&localized!==hit.term){label='<b>'+esc(localized)+'</b><span style="color:var(--mut);font-size:10px"> (#'+esc(hit.term)+')</span>';}
+      else{label='<b>#'+esc(hit.term)+'</b>';}
       const langLabel=lang&&lang!=='de'?'<span style="color:var(--mut);font-size:10px"> · '+esc(lang)+'</span>':'';
       gtip.innerHTML=label+langLabel;
       // Position near cursor but keep within viewport.
@@ -1032,17 +1073,16 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
   const _mlHandler=()=>{gtip.style.display='none';renderer.domElement.style.cursor='grab';};
   renderer.domElement.addEventListener('mousemove',_mmHandler);
   renderer.domElement.addEventListener('mouseleave',_mlHandler);
-  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS,_mmHandler,_mlHandler,raf:0};
-  // Precompute language per marker once langgeo is available.
-  ensureLangGeo().then(lg=>{if(lg&&GLOBE===H)precomputeMarkerLangs(srcMarkers,lg,(HTDATA&&HTDATA.languages)||[]);});let frame=0;
+  const clock=new THREE.Clock();const H={renderer,arcGroup,arcs:ARCS,cloud,cloudGeo,cloudMat,_mmHandler,_mlHandler,raf:0};
+  // Precompute language per point once langgeo is available (einmalig async, füllt langs[]).
+  ensureLangGeo().then(lg=>{if(lg&&GLOBE===H)precomputeMarkerLangs(ptLat,ptLon,langs,_N,lg,(HTDATA&&HTDATA.languages)||[]);});let frame=0;
   (function loop(){H.raf=requestAnimationFrame(loop);const t=clock.getElapsedTime();
     if((frame++%120)===0)updateSun();
-    // Zoom-relativ: nah dran → Punkte kleiner (sonst füllen sie den Schirm). Quellen bleiben ruhig.
+    // Zoom-relativ: nah dran → Punkte kleiner. EINE Uniform statt per-Punkt-Scale (25k-tauglich).
     const camDist=camera.position.length();const zoomF=Math.max(0.32,Math.min(1.25,(camDist-1.0)/1.7));
-    group.children.forEach(m=>{
-      if(m.userData.host){const hm=m.userData.host;m.scale.setScalar(hm.scale.x*2.7);}
-      else m.scale.setScalar(m.userData.base*zoomF);
-    });
+    cloudMat.uniforms.uZoom.value=zoomF;
+    cloudMat.uniforms.uPx.value=(renderer.domElement.clientHeight||600);
+    ray.params.Points.threshold=_avgSize*zoomF*3.0;  // Picking-Trefferradius mit Zoom skalieren
     // Arcs blinken: heller Glow wandert a→b (Geschwindigkeit ~ n), gestaffelte Phase + sanfter Opazitäts-Puls.
     if(arcGroup.visible){ARCS.forEach(o=>{
       const tt=((t*o.speed+o.phase)%1+1)%1;o.glow.position.copy(o.curve.getPoint(tt));

@@ -24,6 +24,21 @@ def test_gazetteer_hit_placed_near_city():
     assert dlat <= 1.5 and dlon <= 1.5
 
 
+def test_country_placed_before_language_centroid():
+    # US-Post (Englisch) muss nach Nordamerika, NICHT auf den en-Centroid (London)
+    post = {"url": "https://example.com/us1", "author": "Local Outlet", "location_text": ""}
+    lat, lon = hashtags._place_post(post, (51.5, -0.12), country="US")  # en-Centroid = London
+    assert lon < -30, f"US post lon {lon} should be western hemisphere, not Europe"
+    dlat, dlon = _dist((lat, lon), hashtags.COUNTRY_CENTROIDS["US"])
+    assert dlat <= 4.0 and dlon <= 4.0
+
+
+def test_brazil_post_lands_in_south_america():
+    post = {"url": "u-br", "author": "Folha", "location_text": "", "country": "BR"}
+    lat, lon = hashtags._place_post(post, (39.4, -8.2))  # pt-Centroid = Portugal
+    assert lat < 0 and lon < -30, f"BR post {lat},{lon} should be South America"
+
+
 def test_centroid_fallback_spreads_wide():
     centroid = (51.16, 10.45)
     post = {"url": "https://bsky.app/x/9", "author": "rando", "location_text": ""}

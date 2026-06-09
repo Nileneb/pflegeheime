@@ -121,12 +121,26 @@ def _jitter(seed_str, base, spread=1.5):
 # den Globus. env-justierbar; 0 = exakt auf den Centroid (alte Enge).
 CENTROID_SPREAD = float(os.getenv("PFLEGE_CENTROID_SPREAD", "6.0"))
 
+# Land-Zentroide (ISO-3166 alpha-2). WHY: Posts tragen `country` (aus NEWS_REGION),
+# aber bisher landeten sie am SPRACH-Centroid (en→London, pt→Lissabon) → US/BR-Posts
+# klumpten auf Europa. Country VOR Sprache verorten füllt Amerika/Afrika korrekt.
+COUNTRY_CENTROIDS = {
+    "DE": (51.16, 10.45), "AT": (47.6, 14.1), "CH": (46.8, 8.2), "GB": (54.0, -2.0),
+    "US": (39.5, -98.35), "CA": (56.0, -106.0), "BR": (-10.0, -52.0), "MX": (23.6, -102.5),
+    "AR": (-38.0, -63.0), "ES": (40.0, -3.7), "FR": (46.2, 2.2), "IT": (42.5, 12.5),
+    "PT": (39.5, -8.0), "NL": (52.2, 5.3), "BE": (50.5, 4.5), "PL": (52.0, 19.0),
+    "RU": (61.5, 105.0), "UA": (48.4, 31.2), "TR": (39.0, 35.0), "SA": (24.0, 45.0),
+    "EG": (26.8, 30.8), "ZA": (-29.0, 24.0), "NG": (9.1, 8.7), "KE": (-0.0, 37.9),
+    "ET": (9.1, 40.5), "JP": (36.2, 138.25), "CN": (35.0, 104.0), "IN": (22.0, 79.0),
+    "ID": (-2.5, 118.0), "AU": (-25.0, 133.0), "SE": (62.0, 15.0), "NO": (62.0, 10.0),
+    "DK": (56.0, 10.0), "FI": (64.0, 26.0), "GR": (39.0, 22.0), "CZ": (49.8, 15.5),
+}
 
-def _place_post(post, lang_centroid):
-    """Verortet einen Post → (lat, lon). Reihenfolge: Institution mit bekanntem
-    Sitz (exakt, eng gestreut) → Gazetteer-Treffer im location_text → Sprach-
-    Centroid mit breiter Streuung. Seed = URL (oder id), damit ein Post stabil
-    am selben Ort bleibt."""
+
+def _place_post(post, lang_centroid, country=None):
+    """Verortet einen Post → (lat, lon). Reihenfolge (genau→grob): Institution mit
+    bekanntem Sitz → Gazetteer-Treffer (Stadt) → Land-Centroid (`country`) → Sprach-
+    Centroid. Seed = URL (oder id), damit ein Post stabil am selben Ort bleibt."""
     from marktradar import ranking
     seed = post.get("url") or str(post.get("id") or post.get("location_text") or "")
     inst = ranking.match_institution(
@@ -136,23 +150,26 @@ def _place_post(post, lang_centroid):
     ll = geocode(post.get("location_text"))
     if ll:
         return _jitter(seed, ll, spread=1.5)
+    cc = COUNTRY_CENTROIDS.get((country or post.get("country") or "").upper())
+    if cc:
+        return _jitter(seed, cc, spread=4.0)  # Land-groß, aber enger als der Sprach-Fallback
     return _jitter(seed, lang_centroid, spread=CENTROID_SPREAD)
 
 
 def regeocode(conn, only_missing=False):
     """Rechnet lat/lon bestehender Posts mit der aktuellen Placement-Logik neu
-    (Institution-Sitz + breite Centroid-Streuung) → entzerrt den vorhandenen
-    Globus sofort, ohne neu zu fetchen. `only_missing` nur für noch unverortete."""
+    (Institution-Sitz → Gazetteer → Land-Centroid → Sprach-Centroid) → verteilt den
+    vorhandenen Globus sofort korrekt (US/BR ans echte Land), ohne neu zu fetchen."""
     where = " WHERE lat IS NULL" if only_missing else ""
     rows = conn.execute(
-        f"SELECT id, url, author, location_text, lang_code FROM hashtag_posts{where}").fetchall()
+        f"SELECT id, url, author, location_text, lang_code, country FROM hashtag_posts{where}").fetchall()
     n = 0
     for r in rows:
         entry = _langs.by_code(r["lang_code"] or "de")
         centroid = tuple(entry["centroid"]) if entry else DE_CENTER
         lat, lon = _place_post(
             {"id": r["id"], "url": r["url"], "author": r["author"],
-             "location_text": r["location_text"]}, centroid)
+             "location_text": r["location_text"]}, centroid, country=r["country"])
         conn.execute("UPDATE hashtag_posts SET lat=?, lon=? WHERE id=?", (lat, lon, r["id"]))
         n += 1
     conn.commit()
@@ -465,8 +482,8 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
                 for p in posts:
                     if not p.get("url"):
                         continue
-                    # Institution (exakter Sitz) → Gazetteer → breit gestreuter Centroid.
-                    lat, lon = _place_post(p, lang_centroid)
+                    # Institution → Gazetteer → Land-Centroid (gl) → Sprach-Centroid.
+                    lat, lon = _place_post(p, lang_centroid, country=gl)
                     # WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE deduplicates cross-language
                     # duplicate URLs — the post keeps the first (DE) lang_code attribution; intentional.
                     cur = conn.execute(

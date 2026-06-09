@@ -176,7 +176,7 @@ def scene(conn, unit_id, radius=320, refresh=False):
     Gebäude werden je Einrichtung GECACHT (org_units.buildings_json) — Overpass ist
     flaky+langsam, und es sind nur ~20-30 Einrichtungen. refresh=True erzwingt neu."""
     import json
-    u = conn.execute("SELECT id,name,lat,lon,address,meshy_url,buildings_json "
+    u = conn.execute("SELECT id,name,lat,lon,address,buildings_json "
                      "FROM org_units WHERE id=?", (unit_id,)).fetchone()
     if not u:
         return {"error": "unit not found"}
@@ -195,5 +195,5 @@ def scene(conn, unit_id, radius=320, refresh=False):
                      (json.dumps(bld), unit_id))
         conn.commit()
     return {"name": u["name"], "center": {"lat": u["lat"], "lon": u["lon"]},
-            "address": u["address"], "meshy_url": u["meshy_url"],
+            "address": u["address"],
             "radius": radius, "buildings": bld, "cached": cached}

@@ -53,6 +53,19 @@ photos.json je Adresse), `delay_s`/`retries` gegen Overpass-429/504. CLI: `--tra
 Bei langem Live-Lauf via blender-mcp bricht der Socket-Client evtl. ab („No data received"),
 Blender rendert aber im Hintergrund durch → Fortschritt über die `photos.json`-mtimes pollen.
 
+## Schritt 2: Kuratieren (`curate.py`)
+Lokales Tool, das die Renders aus `out/buildings/` in die `building_photos`-Tabelle einliest
+und je Einrichtung eine Drag+Drop-Tabelle zeigt — sortierbar nach **Perspektive** (N/O/S/W,
+aus dem Orbit-Winkel abgeleitet) und **Style/Typ** (Blender-Render / echtes Foto / Luftbild /
+Zeichnung), mit „gut"-Flag und Reihenfolge-per-Drag. Eigene Fotos per Drag-Upload ergänzen.
+```bash
+python -m marktradar.curate          # → http://127.0.0.1:8766
+```
+„⟳ Renders einlesen" scannt `out/buildings/` (idempotent, mappt Ordner-Slugs auf `org_units`).
+Hochgeladene Fotos landen unter `out/buildings/<traeger>/<unit>/manual/`. Das gewählte Set
+(`chosen=1`) ist das Deliverable für den Prod-Viewer. Env: `PFLEGE_OUT_ROOT`, `PFLEGE_DB`,
+`PFLEGE_CURATE_PORT` (8766).
+
 ## Bekannte Grenzen
 - OSM/Blosm liefert keine 3D-Verkehrsschilder.
 - `singleObject=False` (für Einzelgebäude-Framing) verschmilzt Straßen/Wald/Wasser in

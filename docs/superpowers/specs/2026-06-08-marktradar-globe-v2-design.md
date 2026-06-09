@@ -173,3 +173,35 @@ ganz verschwinden** — rein visuell, KEIN DB-Löschen.
   (alte Verbindungen verblassen mit).
 - `EXPIRY` env-konfigurierbar (`PFLEGE_POST_EXPIRY_DAYS`, default z.B. 21). 0 = aus (alles zeigen).
 - DB bleibt unangetastet (kein Prune); nur Anzeige filtert/dimmt.
+
+---
+
+## Nachtrag v2.2 (2026-06-09): Ranking-Rails + Entzerrung
+
+**Problem (User):** Posts/Geopunkte wuchsen kaum, alles stark zentriert; automatisch
+mehr Quellen aufnehmen birgt Verschmutzungs-Risiko → es braucht **Guardrails**.
+
+**Lösung — `marktradar/ranking.py` (drei Rails, reine, getestete Schicht):**
+1. **Sprache (Lesbarkeit):** `lang_tier` 0=de · 1=EU/westlich · 2=fern. Deutsche
+   Posts werden bei der Auswertung „nach oben gespült" — fremdsprachige bleiben
+   ERFASST, rutschen nur runter (kein Ausschluss → Qualitätskontrolle bleibt machbar).
+2. **Quellen-Trust:** Ämter/Institutionen > Presse > Social. `INSTITUTIONS`-Registry
+   (RKI, BMG, WHO, EU-Kommission, ECDC, Landesministerien …) + generische Marker
+   (`ministerium`, `behörde`, `.europa.eu`, `who.int`, …).
+3. **Geo-Präzision:** exakt verortet (Institutionssitz / Gazetteer-Treffer) schlägt
+   groben Sprach-Centroid. Institutionen tragen Rail 2 UND 3 zugleich (Sitz bekannt).
+
+`score_post` = 0.45·Lesbarkeit + 0.40·Trust + 0.15·Geo (0..1). `map_data` hängt
+score/trust/lang_tier/geo_precise an jeden Punkt; die QC-Quellenliste je Hashtag ist
+nach Score sortiert. Frontend (`viewer.py` `showHtSources`): Trust-Badge (⚖/📰/💬) +
+Tier-Chip (DE/EU/INT). **Falle:** `lang_tier===0` (DE) ist JS-falsy → NICHT `x||2`.
+
+**Entzerrung (Zentrierung):** `_jitter(..., spread)` parametrisiert; Centroid-Fallback
+streut jetzt breit (`PFLEGE_CENTROID_SPREAD`, default 6°) statt ±1.5° → Sprach-Cluster
+zerfließen land-groß. `_place_post` = Institution(eng 0.6°) → Gazetteer(1.5°) →
+Centroid(breit). `regeocode(conn)` rechnet Bestands-Posts neu (MCP-Tool `regeocode_posts`).
+`map_data(max_points=1500)`. Real verifiziert: σ(lon) 2.1°→11.6°, distinct Punkte 147→391.
+
+**Offen (User „dann sehen wir weiter"):** weitere Regeln (mehr Institutionen-Registry,
+echte Post-Geolocation statt Centroid, automatische Quellen-Aufnahme mit Trust-Gate),
+und Prod-Refresh-Takt prüfen (User: „in 12h keine neue Quelle" → Cron/Frequenz).

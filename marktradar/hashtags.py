@@ -105,13 +105,58 @@ def geocode(text):
     return None
 
 
-def _jitter(seed_str, base):
-    """Deterministischer kleiner Versatz (±~1.5°) damit gleiche Koordinaten nicht
-    exakt überlappen — Stadt-Cluster bleiben sichtbar getrennt."""
+def _jitter(seed_str, base, spread=1.5):
+    """Kleiner pseudo-zufälliger Versatz (±`spread`°) um `base`, damit gleiche
+    Koordinaten nicht exakt überlappen. `spread` steuert die Streuung: eng (≈0.6)
+    für exakt verortete Institutionen, breit (CENTROID_SPREAD) für den groben
+    Sprach-Centroid-Fallback — sonst kollabieren alle Fallback-Posts einer Sprache
+    auf einen Punkt (= die Zentrierung im Globus)."""
     h = abs(hash(seed_str))
-    dlat = ((h % 1000) / 1000 - 0.5) * 3.0
-    dlon = (((h // 1000) % 1000) / 1000 - 0.5) * 3.0
+    dlat = ((h % 1000) / 1000 - 0.5) * 2 * spread
+    dlon = (((h // 1000) % 1000) / 1000 - 0.5) * 2 * spread
     return (base[0] + dlat, base[1] + dlon)
+
+
+# WHY: Sprach-Centroid-Fallback breit streuen (Land-groß statt Punkt) → entzerrt
+# den Globus. env-justierbar; 0 = exakt auf den Centroid (alte Enge).
+CENTROID_SPREAD = float(os.getenv("PFLEGE_CENTROID_SPREAD", "6.0"))
+
+
+def _place_post(post, lang_centroid):
+    """Verortet einen Post → (lat, lon). Reihenfolge: Institution mit bekanntem
+    Sitz (exakt, eng gestreut) → Gazetteer-Treffer im location_text → Sprach-
+    Centroid mit breiter Streuung. Seed = URL (oder id), damit ein Post stabil
+    am selben Ort bleibt."""
+    from marktradar import ranking
+    seed = post.get("url") or str(post.get("id") or post.get("location_text") or "")
+    inst = ranking.match_institution(
+        f"{post.get('author', '')} {post.get('location_text', '')} {post.get('url', '')}")
+    if inst:
+        return _jitter(seed, (inst["lat"], inst["lon"]), spread=0.6)
+    ll = geocode(post.get("location_text"))
+    if ll:
+        return _jitter(seed, ll, spread=1.5)
+    return _jitter(seed, lang_centroid, spread=CENTROID_SPREAD)
+
+
+def regeocode(conn, only_missing=False):
+    """Rechnet lat/lon bestehender Posts mit der aktuellen Placement-Logik neu
+    (Institution-Sitz + breite Centroid-Streuung) → entzerrt den vorhandenen
+    Globus sofort, ohne neu zu fetchen. `only_missing` nur für noch unverortete."""
+    where = " WHERE lat IS NULL" if only_missing else ""
+    rows = conn.execute(
+        f"SELECT id, url, author, location_text, lang_code FROM hashtag_posts{where}").fetchall()
+    n = 0
+    for r in rows:
+        entry = _langs.by_code(r["lang_code"] or "de")
+        centroid = tuple(entry["centroid"]) if entry else DE_CENTER
+        lat, lon = _place_post(
+            {"id": r["id"], "url": r["url"], "author": r["author"],
+             "location_text": r["location_text"]}, centroid)
+        conn.execute("UPDATE hashtag_posts SET lat=?, lon=? WHERE id=?", (lat, lon, r["id"]))
+        n += 1
+    conn.commit()
+    return {"regeocoded": n}
 
 
 # ── Fetcher: liefern Liste {source, url, author, content, location_text, published} ──
@@ -420,14 +465,8 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
                 for p in posts:
                     if not p.get("url"):
                         continue
-                    ll = geocode(p.get("location_text"))
-                    if ll is None:
-                        # WHY: spread fallback around the fetch-language's region instead
-                        # of always Germany — this distributes non-DE posts across the globe.
-                        ll = _jitter(p["url"], lang_centroid)
-                    else:
-                        ll = _jitter(p["url"], ll)
-                    lat, lon = ll
+                    # Institution (exakter Sitz) → Gazetteer → breit gestreuter Centroid.
+                    lat, lon = _place_post(p, lang_centroid)
                     # WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE deduplicates cross-language
                     # duplicate URLs — the post keeps the first (DE) lang_code attribution; intentional.
                     cur = conn.execute(
@@ -743,7 +782,7 @@ def ensure_translations(conn, hashtag_id: int, term: str,
 
 
 # ── Map-Daten für den Globus ──
-def map_data(conn, max_points=600):
+def map_data(conn, max_points=1500):
     tags = {r["id"]: dict(r) for r in conn.execute(
         "SELECT id,term,color,active FROM hashtags").fetchall()}
     counts = {}
@@ -761,27 +800,40 @@ def map_data(conn, max_points=600):
         legend.append({**t, "count": n, "geo": geo, "news": w.get("count", 0),
                        "cooc": w.get("cooc", 0), "weight": w.get("weight", 0)})
     legend.sort(key=lambda x: -(x["weight"] + x["count"]))
+    from marktradar import ranking
     rows = conn.execute(
-        "SELECT p.hashtag_id,p.source,p.url,p.author,p.content,p.lat,p.lon,p.published "
+        "SELECT p.hashtag_id,p.source,p.url,p.author,p.content,p.lat,p.lon,p.published,"
+        "p.lang_code,p.location_text "
         "FROM hashtag_posts p WHERE p.lat IS NOT NULL "
         "ORDER BY p.published DESC LIMIT ?", (max_points,)).fetchall()
     points = []
     for r in rows:
         t = tags.get(r["hashtag_id"], {})
         wn = (W.get(r["hashtag_id"], {}).get("weight", 0) / maxw) if maxw else 0
+        sc = ranking.score_post(dict(r))
         points.append({
             "lat": r["lat"], "lon": r["lon"], "color": t.get("color", "#5b8def"),
             "term": t.get("term", "?"), "source": r["source"], "url": r["url"],
             "author": r["author"], "content": r["content"], "published": r["published"],
             "weight": round(wn, 3),  # 0..1 Trend-Stärke → Pulsieren
+            "score": sc["score"], "trust": sc["trust"], "lang_tier": sc["lang_tier"],
+            "geo_precise": sc["geo_precise"],
         })
-    sources = {}
+    # QC-Quellenliste je Hashtag: lesbare + vertrauenswürdige Posts nach oben (Score),
+    # damit der Leser oben anfangen kann — fremdsprachig/anonym bleibt erfasst, rutscht runter.
+    by_tag: dict = {}
     for r in conn.execute(
-            "SELECT hashtag_id,source,url,author,content,published FROM hashtag_posts "
-            "ORDER BY published DESC").fetchall():
-        sources.setdefault(r["hashtag_id"], [])
-        if len(sources[r["hashtag_id"]]) < 12:
-            sources[r["hashtag_id"]].append(dict(r))
+            "SELECT hashtag_id,source,url,author,content,published,lang_code,location_text "
+            "FROM hashtag_posts").fetchall():
+        by_tag.setdefault(r["hashtag_id"], []).append(dict(r))
+    sources = {}
+    for tid, lst in by_tag.items():
+        ranked = ranking.rank_posts(lst)[:12]
+        sources[tid] = [{
+            "source": p["source"], "url": p["url"], "author": p["author"],
+            "content": p["content"], "published": p["published"],
+            "score": p["score"], "trust": p["trust"], "lang_tier": p["lang_tier"],
+        } for p in ranked]
 
     # Build translations map keyed by canonical hashtag term (active only)
     translations: dict[str, dict[str, str]] = {}

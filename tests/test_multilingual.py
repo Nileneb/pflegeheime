@@ -337,18 +337,18 @@ def test_refresh_uses_language_centroid_as_fallback(conn, monkeypatch):
     fr_centroid = languages.by_code("fr")["centroid"]
     de_centroid = languages.by_code("de")["centroid"]
 
+    tol = hashtags.CENTROID_SPREAD + 0.01  # Fallback streut bewusst land-breit um den Centroid
     for row in rows:
         if row["lang_code"] == "fr":
-            # Jitter is ±1.5°, centroid is [46.23, 2.21]
-            assert abs(row["lat"] - fr_centroid[0]) < 2.5, (
+            assert abs(row["lat"] - fr_centroid[0]) <= tol, (
                 f"FR post lat {row['lat']} too far from FR centroid {fr_centroid[0]}"
             )
-            assert abs(row["lon"] - fr_centroid[1]) < 2.5, (
+            assert abs(row["lon"] - fr_centroid[1]) <= tol, (
                 f"FR post lon {row['lon']} too far from FR centroid {fr_centroid[1]}"
             )
         elif row["lang_code"] == "de":
-            assert abs(row["lat"] - de_centroid[0]) < 2.5
-            assert abs(row["lon"] - de_centroid[1]) < 2.5
+            assert abs(row["lat"] - de_centroid[0]) <= tol
+            assert abs(row["lon"] - de_centroid[1]) <= tol
 
 
 def test_de_fallback_still_uses_de_center(conn, monkeypatch):
@@ -375,8 +375,9 @@ def test_de_fallback_still_uses_de_center(conn, monkeypatch):
     ).fetchone()
     assert row is not None
     de_lat, de_lon = hashtags.DE_CENTER
-    assert abs(row["lat"] - de_lat) < 2.5
-    assert abs(row["lon"] - de_lon) < 2.5
+    tol = hashtags.CENTROID_SPREAD + 0.01  # bewusst breitere Streuung als der alte enge Jitter
+    assert abs(row["lat"] - de_lat) <= tol
+    assert abs(row["lon"] - de_lon) <= tol
 
 
 # ── sleep placement: once per language, not per source ───────────────────────

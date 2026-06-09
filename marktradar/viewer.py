@@ -378,6 +378,8 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .htsrc .sm{color:var(--mut);font-size:10px}
 .htsrc a{color:#cdd8e0}.htsrc a:hover{color:#fff}
 .srcbadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;margin-right:5px;letter-spacing:1px}
+.trustbadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;margin-right:4px;white-space:nowrap}
+.tierbadge{font-size:9px;margin-right:5px;opacity:.85}
 .orgmodes{display:flex;gap:6px;margin:4px 0 14px}
 .flowwrap{overflow:auto;padding:6px 0 16px;max-height:74vh}
 #org3d{height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
@@ -653,6 +655,13 @@ function disposeScene(h){const tp=document.getElementById('org3dtip');if(tp)tp.s
 
 // ── HASHTAG-GLOBUS ──
 const SRCC={mastodon:'#6364ff',bluesky:'#1185fe',news:'#f0a830'};
+const TRUSTC={institution:'#2ecc71',press:'#f0a830',social:'#7a8aa0'};
+const TRUSTL={institution:'⚖ Amt',press:'📰 Presse',social:'💬 Social'};
+const TIERL=['DE','EU','INT'];        // lang_tier 0/1/2 → Lesbarkeits-Marker (Text, Flaggen rendern unzuverlässig)
+const TIERC=['#67d98b','#7fb0ff','#7a8aa0'];
+function trustBadge(s){const t=s.trust||'social';const ti=Math.min(s.lang_tier==null?2:s.lang_tier,2);  // WHY: lang_tier 0 (DE) ist falsy → kein ||
+  return `<span class=trustbadge style="color:${TRUSTC[t]};border-color:${TRUSTC[t]}">${TRUSTL[t]}</span>`+
+    `<span class=tierbadge style="color:${TIERC[ti]}" title="Sprach-Tier ${s.lang_tier} (0=DE, 1=EU/westlich, 2=fern)">${TIERL[ti]}</span>`;}
 let HTDATA=null, GLOBE=null, ARCS_ON=true, LANG_ON=true, LANGGEO=null;
 // Age-decay: marker brightness fades linearly with age, gone after EXPIRY days (0 = off).
 // Server-injected via window.POST_EXPIRY_DAYS. Sources stay in the DB — this is purely visual.
@@ -748,6 +757,7 @@ function renderHtLegend(){const d=HTDATA;$('htlist').className='';
 function showHtSources(id,term){$('htsrc_title').textContent='QUELLEN · #'+term;
   const list=(HTDATA.sources[id]||[]);$('htsources').className=list.length?'':'muted';
   $('htsources').innerHTML=list.map(s=>`<a class=htsrc href="${esc(s.url)}" target=_blank>`+
+    trustBadge(s)+
     `<span class=srcbadge style="color:${SRCC[s.source]||'#888'};border-color:${SRCC[s.source]||'#888'}">${esc(s.source)}</span>`+
     `${esc((s.content||'').slice(0,100))}<span class=sm> — ${esc(s.author||'')} · ${esc((s.published||'').slice(0,10))}</span></a>`).join('')
     ||'noch keine Quellen — „↻ Quellen abrufen“ klicken';}

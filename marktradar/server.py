@@ -300,8 +300,18 @@ def refresh_hashtags(sources: list[str] | None = None, limit: int = 20) -> dict:
 @mcp.tool()
 def hashtag_map() -> dict:
     """Geo-Punkte + Legende für die Hashtag-Weltkarte: pro Punkt lat/lon, Farbe,
-    Hashtag, Quelle und klickbare URL; je Hashtag Aktivität + echte Quell-Links."""
+    Hashtag, Quelle und klickbare URL; je Hashtag Aktivität + echte Quell-Links.
+    Punkte tragen score/trust/lang_tier; QC-Quellen je Hashtag sind nach Score sortiert."""
     return hashtags.map_data(_conn)
+
+
+@mcp.tool()
+def regeocode_posts(only_missing: bool = False) -> dict:
+    """Verortet bestehende Hashtag-Posts mit der aktuellen Placement-Logik neu
+    (Institution mit exaktem Sitz → Gazetteer → breit gestreuter Sprach-Centroid)
+    → entzerrt den Globus sofort, ohne neu zu fetchen. only_missing=True nur für
+    bisher unverortete Posts."""
+    return hashtags.regeocode(_conn, only_missing=only_missing)
 
 
 @mcp.tool()

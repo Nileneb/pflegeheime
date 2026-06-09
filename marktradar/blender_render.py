@@ -142,19 +142,61 @@ def run(facility, *, radius_m=320, n_views=8, out_root="out/buildings", db_path=
     return out_dir, manifest, stats
 
 
+def run_traeger(traeger="Bergische Diakonie", *, radius_m=320, n_views=8,
+                out_root="out/buildings", db_path="pflege.db", only_ids=None):
+    """Alle geokodierten Einrichtungen eines Trägers nacheinander rendern (hausweise: ein Ordner
+    + photos.json je Adresse). Fehler je Einrichtung werden gesammelt und reported — eine flaky
+    Overpass/ArcGIS-Antwort darf den Batch nicht killen, wird aber NICHT verschluckt. only_ids
+    erlaubt Chunking (Teilmenge der ids)."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        units = conn.execute(
+            "SELECT id, name FROM org_units WHERE traeger=? AND lat IS NOT NULL "
+            "AND lon IS NOT NULL AND active=1 ORDER BY name", (traeger,)).fetchall()
+    finally:
+        conn.close()
+    if only_ids is not None:
+        wanted = set(only_ids)
+        units = [u for u in units if u["id"] in wanted]
+    done, errors = [], []
+    for u in units:
+        try:
+            out_dir, _, stats = run(u["id"], radius_m=radius_m, n_views=n_views,
+                                    out_root=out_root, db_path=db_path)
+            done.append({"id": u["id"], "name": u["name"], "out": out_dir,
+                         "object_count": stats["object_count"]})
+            print(f"OK   {u['name']} -> {out_dir}")
+        except Exception as e:  # WHY: flaky Overpass je Einrichtung; weiterlaufen, Fehler reporten
+            errors.append({"id": u["id"], "name": u["name"], "error": str(e)})
+            print(f"FAIL {u['name']}: {e}")
+    return {"done": len(done), "failed": len(errors), "results": done, "errors": errors}
+
+
 def _main(argv):
     import argparse
     ap = argparse.ArgumentParser(description="Blosm geo-import + orbit render")
-    ap.add_argument("--facility", required=True, help="org_units id (int) oder Name-Teilstring")
+    ap.add_argument("--facility", help="org_units id (int) oder Name-Teilstring (Einzel-Lauf)")
+    ap.add_argument("--traeger", help="alle geokodierten Einrichtungen dieses Trägers (Batch)")
     ap.add_argument("--radius", type=int, default=320)
     ap.add_argument("--views", type=int, default=8)
     ap.add_argument("--out-root", default="out/buildings")
     ap.add_argument("--db", default="pflege.db")
     a = ap.parse_args(argv)
-    facility = int(a.facility) if a.facility.isdigit() else a.facility
-    out_dir, manifest, stats = run(facility, radius_m=a.radius, n_views=a.views,
-                                   out_root=a.out_root, db_path=a.db)
-    print(f"OK out_dir={out_dir} manifest={manifest} stats={stats}")
+    if a.traeger:
+        report = run_traeger(a.traeger, radius_m=a.radius, n_views=a.views,
+                             out_root=a.out_root, db_path=a.db)
+        print(f"BATCH done={report['done']} failed={report['failed']}")
+        for e in report["errors"]:
+            print(f"  FAIL {e['name']}: {e['error']}")
+    elif a.facility:
+        facility = int(a.facility) if a.facility.isdigit() else a.facility
+        out_dir, manifest, stats = run(facility, radius_m=a.radius, n_views=a.views,
+                                       out_root=a.out_root, db_path=a.db)
+        print(f"OK out_dir={out_dir} manifest={manifest} stats={stats}")
+    else:
+        ap.error("either --facility or --traeger required")
 
 
 if __name__ == "__main__":

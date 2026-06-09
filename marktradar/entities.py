@@ -329,3 +329,27 @@ def classify_topics(conn, article_ids=None) -> dict:
             conn.commit()
     conn.commit()
     return {"classified": classified, "failed": failed}
+
+
+# Entity-Typ → Farbe (Akteur-Chips im Viewer, konsistent mit dem Entitäten-Graph).
+ACTOR_COLORS = {"traeger": "#67d98b", "hersteller": "#f0a830",
+                "partei": "#c792ea", "behoerde": "#5b8def"}
+
+
+def actors_for_hashtags(conn, per: int = 6) -> dict:
+    """Top-Akteure (Entitäten) je Hashtag über den geteilten `articles`-Join.
+    → {hashtag_id: [{name, type, n}]}. Verbindet die bisher getrennten Linsen
+    Entität (WER) und Hashtag (WAS) zur Akteur×Thema-Sicht, ohne sie zu mergen."""
+    rows = conn.execute(
+        "SELECT ah.hashtag_id AS hid, e.name, e.type, COUNT(*) AS n "
+        "FROM article_entities ae "
+        "JOIN article_hashtags ah ON ah.article_id = ae.article_id "
+        "JOIN entities e ON e.id = ae.entity_id "
+        "GROUP BY ah.hashtag_id, e.id "
+        "ORDER BY ah.hashtag_id, n DESC").fetchall()
+    out: dict = {}
+    for r in rows:
+        lst = out.setdefault(r["hid"], [])
+        if len(lst) < per:
+            lst.append({"name": r["name"], "type": r["type"], "n": r["n"]})
+    return out

@@ -53,12 +53,22 @@ CODES: list[str] = [lang["code"] for lang in LANGUAGES]
 # Languages we actually fetch sources in — all are ⊆ CODES.
 FETCH_LANGS: list[str] = ["en", "es", "fr", "pt", "ar", "ru", "it", "nl", "pl", "tr", "uk", "ja"]
 
-# Representative country code for Google News hl/gl/ceid per fetch language.
-NEWS_REGION: dict[str, str] = {
-    "en": "US", "es": "ES", "fr": "FR", "pt": "BR",
-    "ar": "SA", "ru": "RU", "it": "IT", "nl": "NL",
-    "pl": "PL", "tr": "TR", "uk": "UA", "ja": "JP",
+# Google-News-Zielregionen je Fetch-Sprache (gl/ceid). Mehrere Länder pro Sprache,
+# damit Amerika UND Afrika abgedeckt sind statt nur EU (en→US bisher ließ NG/KE/ZA leer).
+# Reihenfolge: primäre Region zuerst (= NEWS_REGION-Singular). Alle Codes brauchen einen
+# Eintrag in hashtags.COUNTRY_CENTROIDS.
+NEWS_REGIONS: dict[str, list[str]] = {
+    "en": ["US", "GB", "NG", "KE", "ZA", "IN"],   # +Nigeria/Kenia/Südafrika/Indien
+    "es": ["ES", "MX", "AR", "CO"],               # +Lateinamerika
+    "fr": ["FR", "SN", "CI", "CD"],               # +Frankophones Afrika
+    "pt": ["BR", "PT", "AO", "MZ"],               # +Angola/Mosambik
+    "ar": ["SA", "EG", "MA"],                     # +Ägypten/Marokko (Nordafrika)
+    "ru": ["RU"], "it": ["IT"], "nl": ["NL"], "pl": ["PL"],
+    "tr": ["TR"], "uk": ["UA"], "ja": ["JP"],
 }
+
+# Repräsentative Primär-Region je Sprache (abgeleitet → kann nicht divergieren).
+NEWS_REGION: dict[str, str] = {lang: regions[0] for lang, regions in NEWS_REGIONS.items()}
 
 
 def by_code(code: str) -> dict | None:

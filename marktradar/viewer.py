@@ -392,6 +392,10 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
 .srcbadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;margin-right:5px;letter-spacing:1px}
 .trustbadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;margin-right:4px;white-space:nowrap}
 .tierbadge{font-size:9px;margin-right:5px;opacity:.85}
+.actorrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:0 0 8px;padding-bottom:7px;border-bottom:1px solid #1e2733}
+.actorlbl{font-size:8px;letter-spacing:1px;color:#7a8aa0;margin-right:3px}
+.actorchip{font-size:9px;border:1px solid;border-radius:9px;padding:1px 6px;white-space:nowrap;opacity:.92}
+.actorchip .an{font-size:8px;opacity:.7;margin-left:3px}
 .orgmodes{display:flex;gap:6px;margin:4px 0 14px}
 .flowwrap{overflow:auto;padding:6px 0 16px;max-height:74vh}
 #org3d{height:620px;border-radius:8px;overflow:hidden;background:radial-gradient(circle at 50% 38%,#10203f,#05080f);cursor:grab}
@@ -766,9 +770,15 @@ function renderHtLegend(){const d=HTDATA;$('htlist').className='';
     `<span class=geo>${t.geo}📍</span><span class=ct>${t.count}</span>`+
     `<span class=tog onclick="toggleHt(${t.id},${t.active?0:1})" title="aktiv/inaktiv">${t.active?'◉':'○'}</span>`+
     `<span class=x onclick="delHt(${t.id},this)" title="löschen — nochmal klick = weg">✕</span></div>`).join('')||'<span class=muted>keine Hashtags</span>';}
+function actorRow(id){
+  const acts=((HTDATA&&HTDATA.actors)||{})[id]||[];
+  if(!acts.length)return '';
+  const col=(HTDATA&&HTDATA.actor_colors)||{};
+  const chips=acts.map(a=>`<span class=actorchip style="color:${col[a.type]||'#9fb0c8'};border-color:${col[a.type]||'#9fb0c8'}" title="${esc(a.type)} · ${a.n}× gemeinsam">${esc(a.name)}<span class=an>${a.n}</span></span>`).join('');
+  return `<div class=actorrow><span class=actorlbl>AKTEURE</span>${chips}</div>`;}
 function showHtSources(id,term){$('htsrc_title').textContent='QUELLEN · #'+term;
   const list=(HTDATA.sources[id]||[]);$('htsources').className=list.length?'':'muted';
-  $('htsources').innerHTML=list.map(s=>`<a class=htsrc href="${esc(s.url)}" target=_blank>`+
+  $('htsources').innerHTML=actorRow(id)+list.map(s=>`<a class=htsrc href="${esc(s.url)}" target=_blank>`+
     trustBadge(s)+
     `<span class=srcbadge style="color:${SRCC[s.source]||'#888'};border-color:${SRCC[s.source]||'#888'}">${esc(s.source)}</span>`+
     `${esc((s.content||'').slice(0,100))}<span class=sm> — ${esc(s.author||'')} · ${esc((s.published||'').slice(0,10))}</span></a>`).join('')

@@ -302,7 +302,8 @@ def test_refresh_collects_errors_without_aborting(conn, monkeypatch):
     assert result["added"] >= 1
     # The EN error must be collected, not raised
     assert any("en" in e for e in result["errors"])
-    assert call_n["n"] == 2  # once DE, once EN
+    # DE = 1 Region; EN = 6 Regionen (alle werfen) → 1 + 6 Calls, EN-Fehler je Region gesammelt
+    assert call_n["n"] == 1 + len(languages.NEWS_REGIONS["en"])
 
 
 # ── Geolocation fallback uses language centroid ───────────────────────────────

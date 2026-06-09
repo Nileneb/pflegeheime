@@ -134,6 +134,8 @@ COUNTRY_CENTROIDS = {
     "ET": (9.1, 40.5), "JP": (36.2, 138.25), "CN": (35.0, 104.0), "IN": (22.0, 79.0),
     "ID": (-2.5, 118.0), "AU": (-25.0, 133.0), "SE": (62.0, 15.0), "NO": (62.0, 10.0),
     "DK": (56.0, 10.0), "FI": (64.0, 26.0), "GR": (39.0, 22.0), "CZ": (49.8, 15.5),
+    "CO": (4.6, -74.1), "SN": (14.5, -14.5), "CI": (7.5, -5.5), "CD": (-2.9, 23.6),
+    "AO": (-11.2, 17.9), "MZ": (-18.7, 35.5), "MA": (31.8, -7.1),
 }
 
 
@@ -462,41 +464,45 @@ def refresh(conn, sources=("mastodon", "bluesky", "news"), limit=20, only_id=Non
         ]
 
         for lang, term in lang_terms:
-            gl = _langs.NEWS_REGION.get(lang, "DE")
+            primary = _langs.NEWS_REGION.get(lang, "DE")
+            # News deckt mehrere Länder je Sprache ab (Amerika/Afrika); Bluesky/Mastodon
+            # liefern keinen Länder-Parameter → einmal mit der Primär-Region.
+            news_regions = _langs.NEWS_REGIONS.get(lang, [primary])
             lang_entry = _langs.by_code(lang)
             lang_centroid = tuple(lang_entry["centroid"]) if lang_entry else DE_CENTER
             for src in sources:
-                try:
-                    if src == "news":
-                        posts = fetch_news(term, limit, hl=lang, gl=gl, ceid=f"{gl}:{lang}")
-                    elif src == "bluesky":
-                        posts = fetch_bluesky(term, limit, lang=lang)
-                    else:
-                        # WHY: for mastodon, country is the language's representative region
-                        # (NEWS_REGION), not the post's true origin — approximation for geo-display.
-                        posts = fetch_mastodon(term, limit)
-                except Exception as e:  # WHY: eine Quelle/ein Tag/eine Sprache down → andere weiter, Fehler gemeldet
-                    errors.append(f"{src}:{lang}:{ht['term']}: {type(e).__name__}: {e}")
-                    continue
-
-                for p in posts:
-                    if not p.get("url"):
+                regions = news_regions if src == "news" else [primary]
+                for gl in regions:
+                    try:
+                        if src == "news":
+                            posts = fetch_news(term, limit, hl=lang, gl=gl, ceid=f"{gl}:{lang}")
+                        elif src == "bluesky":
+                            posts = fetch_bluesky(term, limit, lang=lang)
+                        else:
+                            # WHY: mastodon kennt kein Land → country = Primär-Region (Näherung).
+                            posts = fetch_mastodon(term, limit)
+                    except Exception as e:  # WHY: eine Quelle/Sprache/Region down → andere weiter
+                        errors.append(f"{src}:{lang}:{gl}:{ht['term']}: {type(e).__name__}: {e}")
                         continue
-                    # Institution → Gazetteer → Land-Centroid (gl) → Sprach-Centroid.
-                    lat, lon = _place_post(p, lang_centroid, country=gl)
-                    # WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE deduplicates cross-language
-                    # duplicate URLs — the post keeps the first (DE) lang_code attribution; intentional.
-                    cur = conn.execute(
-                        "INSERT OR IGNORE INTO hashtag_posts"
-                        "(hashtag_id,source,url,author,content,"
-                        "location_text,lat,lon,published,fetched_at,lang_code,country)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (ht["id"], p["source"], p["url"], p.get("author"), p.get("content"),
-                         p.get("location_text"), lat, lon, p.get("published"), now,
-                         lang, gl))
-                    if cur.rowcount:
-                        added += 1
-                        per_source[src] = per_source.get(src, 0) + 1
+
+                    for p in posts:
+                        if not p.get("url"):
+                            continue
+                        # Institution → Gazetteer → Land-Centroid (gl) → Sprach-Centroid.
+                        lat, lon = _place_post(p, lang_centroid, country=gl)
+                        # WHY: UNIQUE(hashtag_id,url) + INSERT OR IGNORE dedupt URL-Dubletten
+                        # über Sprachen/Regionen — der erste Treffer behält seine Attribution.
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO hashtag_posts"
+                            "(hashtag_id,source,url,author,content,"
+                            "location_text,lat,lon,published,fetched_at,lang_code,country)"
+                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (ht["id"], p["source"], p["url"], p.get("author"), p.get("content"),
+                             p.get("location_text"), lat, lon, p.get("published"), now,
+                             lang, gl))
+                        if cur.rowcount:
+                            added += 1
+                            per_source[src] = per_source.get(src, 0) + 1
 
             # WHY: fire once per language (not per source) — ~13× more langs than before;
             # staggering per-source would add ~3× unnecessary sleep (~21 min for 109 hashtags).
@@ -868,10 +874,13 @@ def map_data(conn, max_points=1500):
                 translations.setdefault(canonical, {})[r["lang_code"]] = r["term"]
 
     conns = connections(conn, trends_result=tr)
+    from marktradar import entities
     return {
         "legend": legend,
         "points": points,
         "sources": sources,
+        "actors": entities.actors_for_hashtags(conn),  # Akteur×Thema je Hashtag
+        "actor_colors": entities.ACTOR_COLORS,
         "trends": tr["pairs"],
         "connections": conns["arcs"],
         "connections_truncated": conns["truncated"],

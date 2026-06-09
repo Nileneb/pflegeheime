@@ -82,3 +82,24 @@ def test_fetch_account_posts_mastodon(monkeypatch):
     out = watch.fetch_account_posts("mastodon", "rki")
     assert out[0]["url"] == "https://m/x/1" and out[0]["author"] == "rki"
     assert any("lookup" in u for u in calls) and any("/statuses" in u for u in calls)
+
+
+def test_bluesky_401_invalidates_session_and_retries(monkeypatch):
+    import urllib.error
+    from marktradar import credentials
+    sessions = iter(["OLD", "NEW"])
+    monkeypatch.setattr(credentials, "bluesky_session", lambda user_id=None: next(sessions))
+    credentials._BSKY_SESSION.update(handle="h", jwt="OLD")
+    calls = []
+
+    def fake_get(url, as_json=True, headers=None):
+        calls.append(headers.get("Authorization") if headers else None)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(url, 401, "unauth", {}, None)
+        return {"feed": []}
+
+    monkeypatch.setattr(hashtags, "_get", fake_get)
+    out = watch.fetch_account_posts("bluesky", "rki")
+    assert out == []
+    assert calls == ["Bearer OLD", "Bearer NEW"]  # 1× retry mit frischem Token
+    assert credentials._BSKY_SESSION == {}        # Cache wurde bei 401 geleert

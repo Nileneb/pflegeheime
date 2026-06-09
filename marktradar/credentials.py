@@ -42,5 +42,6 @@ def bluesky_session(user_id=None) -> str | None:
         data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=12) as r:
         jwt = json.loads(r.read()).get("accessJwt")
-    _BSKY_SESSION.update(handle=cred["handle"], jwt=jwt)
+    if jwt:  # WHY: kein None cachen → sonst Cache-Hit ohne Token, jeder Call ein Roundtrip
+        _BSKY_SESSION.update(handle=cred["handle"], jwt=jwt)
     return jwt

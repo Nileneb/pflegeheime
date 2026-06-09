@@ -1,5 +1,6 @@
 """Account-Watching: kuratierte Akteur-Accounts beobachten und ihre Posts ingesten.
 Reine CRUD + Fetch/Parse/Geo/Refresh. Auth optional über marktradar.credentials."""
+import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -98,13 +99,28 @@ def fetch_account_posts(platform: str, handle: str) -> list[dict]:
             f"https://{instance}/api/v1/accounts/{aid}/statuses?limit=20", headers=headers)
         return parse_mastodon_statuses(data, handle)
     if platform == "bluesky":
-        jwt = credentials.bluesky_session()
-        headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
         actor = urllib.parse.quote(handle)
-        host = "bsky.social" if jwt else "public.api.bsky.app"
-        data = hashtags._get(
-            f"https://{host}/xrpc/app.bsky.feed.getAuthorFeed?actor={actor}&limit=20",
-            headers=headers)
+
+        def _feed(jwt):
+            headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
+            # WHY: api.bsky.app liefert die unauth. AppView-Suche aus (public.api.bsky.app
+            # → 403 Cloudflare); identisch zu hashtags.fetch_bluesky.
+            host = "bsky.social" if jwt else "api.bsky.app"
+            return hashtags._get(
+                f"https://{host}/xrpc/app.bsky.feed.getAuthorFeed?actor={actor}&limit=20",
+                headers=headers)
+
+        jwt = credentials.bluesky_session()
+        try:
+            data = _feed(jwt)
+        except urllib.error.HTTPError as e:
+            # WHY: Bluesky-JWT läuft nach ~2h ab → Cache leeren + EINMAL neu, sonst
+            # bleiben alle Bluesky-Accounts bis Prozess-Neustart tot.
+            if e.code == 401 and jwt:
+                credentials._BSKY_SESSION.clear()
+                data = _feed(credentials.bluesky_session())
+            else:
+                raise
         return parse_bluesky_feed(data, handle)
     raise ValueError(f"unsupported platform: {platform}")
 

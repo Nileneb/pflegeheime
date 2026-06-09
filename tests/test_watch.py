@@ -109,3 +109,22 @@ def test_map_data_includes_watched_points_and_actor_stream(conn):
 def test_server_exposes_watch_tools():
     import marktradar.server as s
     assert hasattr(s, "watch_add") and hasattr(s, "watch_refresh")
+
+
+def test_place_watched_post_via_label_institution(conn):
+    # Akteur ohne Entity-Link, aber Label = Institutions-Name → dessen Sitz
+    acc = watch.add(conn, "mastodon", "tagesschau@ard.social", label="tagesschau")
+    lat, lon = watch._place_watched_post(conn, acc, {"location_text": ""})
+    assert abs(lat - 53.55) < 0.01 and abs(lon - 9.99) < 0.01  # Hamburg
+
+
+def test_regeocode_replaces_existing(conn):
+    conn.execute("INSERT INTO hashtags(id,term,color,active) VALUES (1,'P','#fff',1)")
+    acc = watch.add(conn, "mastodon", "rki@social.bund.de", label="RKI")
+    conn.execute("INSERT INTO watched_posts(account_id,url,author,content,lat,lon,fetched_at)"
+                 " VALUES (?,'u1','RKI','c',NULL,NULL,'x')", (acc["id"],))
+    conn.commit()
+    res = watch.regeocode(conn)
+    assert res["regeocoded"] == 1
+    row = conn.execute("SELECT lat FROM watched_posts WHERE url='u1'").fetchone()
+    assert abs(row["lat"] - 52.52) < 0.01  # RKI-Sitz via Label

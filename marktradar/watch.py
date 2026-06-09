@@ -125,26 +125,70 @@ def fetch_account_posts(platform: str, handle: str) -> list[dict]:
     raise ValueError(f"unsupported platform: {platform}")
 
 
-def _place_watched_post(conn, account, post):
-    """Geo: verknüpfte Institution (Sitz) → Profil-Ort (Gazetteer) → kein Punkt."""
+# Bekannte Akteur-Sitze, die KEINE Trust-Institution sind (v.a. Medien) — nur für Geo.
+# Schlüssel = lowercased Label/Handle-Präfix (vor '@').
+ACTOR_LOCATIONS = {
+    "tagesschau": (53.55, 9.99), "ard": (53.55, 9.99), "ndr": (53.55, 9.99),
+    "zeit": (53.55, 9.99), "spiegel": (53.55, 9.99), "zdf": (50.0, 8.27),
+    "sueddeutsche": (48.14, 11.58), "faz": (50.11, 8.68),
+}
+
+
+def _institution_for(text):
+    """Institution für einen Akteur-Text: exakter INSTITUTIONS-Name zuerst (robust für
+    kanonische Namen wie 'RKI', die der Substring-Marker '​rki ' nicht trifft), dann
+    Marker-Substring-Suche."""
     from marktradar import ranking
+    if not text:
+        return None
+    low = text.lower()
+    exact = next((i for i in ranking.INSTITUTIONS if i["name"].lower() == low), None)
+    return exact or ranking.match_institution(text) or ranking.match_institution(text + " ")
+
+
+def _place_watched_post(conn, account, post):
+    """Geo eines beobachteten Posts: über den AKTEUR (verknüpfte Entität → Label →
+    Handle, je als Institutionssitz oder Gazetteer-Ort) → Post-Ort → kein Punkt.
+    WHY: institutionelle Account-Posts tragen selbst keinen Orts-Text — der Ort steckt
+    im Akteur (RKI→Berlin, tagesschau→Hamburg)."""
+    texts = []
     if account.get("entity_id"):
         ent = conn.execute("SELECT name FROM entities WHERE id=?",
                            (account["entity_id"],)).fetchone()
         if ent:
-            # WHY: match_institution sucht Substrings in Fließtext; kanonischer Name
-            # "RKI" matched nie "rki " (Trailing-Space-Marker) → direkt über INSTITUTIONS
-            # nach name nachschlagen, sonst Fallback auf Substring-Suche mit Leerzeichen.
-            name = ent["name"]
-            inst = next((i for i in ranking.INSTITUTIONS if i["name"] == name), None)
-            if inst is None:
-                inst = ranking.match_institution(name + " ")
-            if inst:
-                return (inst["lat"], inst["lon"])
+            texts.append(ent["name"])
+    texts += [account.get("label"), account.get("handle")]
+    for t in texts:
+        inst = _institution_for(t)
+        if inst:
+            return (inst["lat"], inst["lon"])
+        loc = ACTOR_LOCATIONS.get((t or "").lower().split("@")[0].strip())
+        if loc:
+            return loc
+        ll = hashtags.geocode(t)
+        if ll:
+            return (ll[0], ll[1])
     ll = hashtags.geocode(post.get("location_text"))
     if ll:
         return (ll[0], ll[1])
     return (None, None)
+
+
+def regeocode(conn) -> dict:
+    """Verortet bestehende watched_posts neu mit der aktuellen Placement-Logik (nach
+    Registry-/Label-Änderungen), ohne neu zu fetchen. Idempotent."""
+    accounts = {a["id"]: a for a in (dict(r) for r in
+                conn.execute("SELECT * FROM watched_accounts").fetchall())}
+    n = 0
+    for r in conn.execute("SELECT id, account_id, url, author, content FROM watched_posts").fetchall():
+        acc = accounts.get(r["account_id"])
+        if not acc:
+            continue
+        lat, lon = _place_watched_post(conn, acc, {"location_text": ""})
+        conn.execute("UPDATE watched_posts SET lat=?, lon=? WHERE id=?", (lat, lon, r["id"]))
+        n += 1
+    conn.commit()
+    return {"regeocoded": n}
 
 
 def refresh(conn) -> dict:

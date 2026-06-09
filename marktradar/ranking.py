@@ -68,6 +68,7 @@ INSTITUTIONS: list[dict] = [
     _inst("Commonwealth Fund", ["commonwealthfund", "commonwealth fund"], 40.71, -74.0, "US"),
     _inst("Lancet/BMJ", ["thelancet", "bmj.com", "bmjopen"], 51.50, -0.12, "GB"),
     _inst("PLOS", ["journals.plos", "plos "], 37.77, -122.42, "US"),
+    _inst("Bundesregierung", ["bundesregierung", "bundeskanzler"], 52.52, 13.38, "DE"),
 ]
 
 # Generische Marker → Trust ohne festen Sitz (regionale Ämter/Behörden/Kammern).

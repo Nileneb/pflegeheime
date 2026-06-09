@@ -132,6 +132,33 @@ def test_user_id_param_accepted_but_ignored(monkeypatch):
     # B-Seam: Signatur akzeptiert user_id, heute ohne Wirkung.
     monkeypatch.setenv("MASTODON_TOKEN", "tok123")
     assert credentials.get("mastodon", user_id=42) == credentials.get("mastodon")
+
+
+def test_bluesky_session_none_without_credential(monkeypatch):
+    monkeypatch.delenv("BLUESKY_HANDLE", raising=False)
+    credentials._BSKY_SESSION.clear()
+    assert credentials.bluesky_session() is None
+
+
+def test_bluesky_session_creates_and_caches_jwt(monkeypatch):
+    monkeypatch.setenv("BLUESKY_HANDLE", "me.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "pw")
+    credentials._BSKY_SESSION.clear()
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"accessJwt": "JWT123"}'
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        return FakeResp()
+
+    monkeypatch.setattr(credentials.urllib.request, "urlopen", fake_urlopen)
+    assert credentials.bluesky_session() == "JWT123"
+    assert credentials.bluesky_session() == "JWT123"  # 2. Aufruf gecacht
+    assert calls["n"] == 1
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -145,8 +172,15 @@ Expected: FAIL (No module named 'marktradar.credentials')
 # marktradar/credentials.py
 """Credential-Provider für authentifizierte Beobachtung. Single-tenant: liest die
 App-Credentials aus env-Secrets (GitHub→.env). Der `user_id`-Parameter ist der
-Andockpunkt für späteren per-User-OAuth (Ansatz B) — heute ignoriert."""
+Andockpunkt für späteren per-User-OAuth (Ansatz B) — heute ignoriert.
+
+Enthält auch den Bluesky-Session-Tausch (App-Passwort → JWT, prozess-gecacht), damit
+sowohl die Hashtag-Suche (hashtags.fetch_bluesky) als auch das Account-Watching
+(watch.fetch_account_posts) ihn nutzen, ohne Import-Zyklus."""
 import os
+import urllib.request
+
+_BSKY_SESSION: dict = {}  # process-cache: {handle, jwt}
 
 
 def get(platform: str, user_id=None) -> dict | None:
@@ -163,12 +197,31 @@ def get(platform: str, user_id=None) -> dict | None:
             return {"handle": handle, "app_password": pw}
         return None
     return None
+
+
+def bluesky_session(user_id=None) -> str | None:
+    """App-Passwort → Session-JWT (prozess-gecacht je Handle) | None (öffentlich).
+    WHY: Bluesky-Auth hebt Rate-Limits; ohne Credential bleibt der Aufrufer öffentlich."""
+    cred = get("bluesky", user_id)
+    if not cred:
+        return None
+    if _BSKY_SESSION.get("handle") == cred["handle"] and _BSKY_SESSION.get("jwt"):
+        return _BSKY_SESSION["jwt"]
+    import json
+    body = json.dumps({"identifier": cred["handle"], "password": cred["app_password"]}).encode()
+    req = urllib.request.Request(
+        "https://bsky.social/xrpc/com.atproto.server.createSession",
+        data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=12) as r:
+        jwt = json.loads(r.read()).get("accessJwt")
+    _BSKY_SESSION.update(handle=cred["handle"], jwt=jwt)
+    return jwt
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/test_credentials.py -q`
-Expected: PASS (5 passed)
+Expected: PASS (7 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -543,6 +596,33 @@ def test_fetch_mastodon_public_without_token(monkeypatch):
     assert captured["headers"] is None  # unverändertes öffentliches Verhalten
 
 
+def test_fetch_bluesky_uses_auth_when_session(monkeypatch):
+    monkeypatch.setattr(credentials, "bluesky_session", lambda user_id=None: "JWT123")
+    captured = {}
+
+    def fake_get(url, as_json=True, headers=None):
+        captured["url"], captured["headers"] = url, headers
+        return {"posts": []}
+
+    monkeypatch.setattr(hashtags, "_get", fake_get)
+    hashtags.fetch_bluesky("Pflege", limit=5)
+    assert "bsky.social" in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer JWT123"
+
+
+def test_fetch_bluesky_public_without_session(monkeypatch):
+    monkeypatch.setattr(credentials, "bluesky_session", lambda user_id=None: None)
+    captured = {}
+
+    def fake_get(url, as_json=True, headers=None):
+        captured["url"], captured["headers"] = url, headers
+        return {"posts": []}
+
+    monkeypatch.setattr(hashtags, "_get", fake_get)
+    hashtags.fetch_bluesky("Pflege", limit=5)
+    assert "api.bsky.app" in captured["url"] and captured["headers"] is None
+
+
 def test_fetch_account_posts_mastodon(monkeypatch):
     # lookup → id, dann statuses
     calls = []
@@ -610,37 +690,49 @@ def fetch_mastodon(term, limit=20, instance="mastodon.social"):
     return out
 ```
 
-- [ ] **Step 3c: Implement `fetch_account_posts` + Bluesky session in `watch.py`**
+- [ ] **Step 3c: Auth in `fetch_bluesky`**
+
+Replace the URL-building part of `fetch_bluesky` in `marktradar/hashtags.py` so it uses the
+authenticated host + Bearer when a session exists, else the public host (current behavior):
+
+```python
+def fetch_bluesky(term, limit=20, lang=None):
+    from marktradar import credentials
+    jwt = credentials.bluesky_session()
+    headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
+    host = "bsky.social" if jwt else "api.bsky.app"
+    q = urllib.parse.quote("#" + term.lstrip("#"))
+    url = f"https://{host}/xrpc/app.bsky.feed.searchPosts?q={q}&limit={limit}"
+    if lang:
+        url += f"&lang={urllib.parse.quote(lang)}"
+    data = _get(url, headers=headers)
+    out = []
+    for p in (data or {}).get("posts", []):
+        au = p.get("author") or {}
+        rec = p.get("record") or {}
+        handle = au.get("handle", "")
+        rkey = (p.get("uri") or "").rsplit("/", 1)[-1]
+        post_url = f"https://bsky.app/profile/{handle}/post/{rkey}" if handle and rkey else None
+        out.append({
+            "source": "bluesky", "url": post_url,
+            "author": au.get("displayName") or handle,
+            "content": (rec.get("text") or "")[:280],
+            "location_text": (au.get("description") or "")[:60],
+            "published": rec.get("createdAt"),
+        })
+    return out
+```
+
+- [ ] **Step 3d: Implement `fetch_account_posts` in `watch.py`**
 
 ```python
 # marktradar/watch.py  (append)
 import urllib.parse
 from marktradar import credentials
 
-_BSKY_SESSION = {}  # process-cache: {jwt, handle}
-
-
-def _bluesky_session():
-    """App-Passwort → Session-JWT (gecacht je Prozess) | None (öffentlich)."""
-    cred = credentials.get("bluesky")
-    if not cred:
-        return None
-    if _BSKY_SESSION.get("handle") == cred["handle"] and _BSKY_SESSION.get("jwt"):
-        return _BSKY_SESSION["jwt"]
-    import json as _json
-    import urllib.request
-    body = _json.dumps({"identifier": cred["handle"], "password": cred["app_password"]}).encode()
-    req = urllib.request.Request(
-        "https://bsky.social/xrpc/com.atproto.server.createSession",
-        data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=hashtags.TIMEOUT) as r:
-        jwt = _json.loads(r.read()).get("accessJwt")
-    _BSKY_SESSION.update(handle=cred["handle"], jwt=jwt)
-    return jwt
-
 
 def fetch_account_posts(platform, handle):
-    """Letzte Posts eines beobachteten Accounts → normalisierte Posts."""
+    """Letzte Posts eines beobachteten Accounts → normalisierte Posts. Auth optional."""
     if platform == "mastodon":
         cred = credentials.get("mastodon")
         instance = cred["instance"] if cred else "mastodon.social"
@@ -655,7 +747,7 @@ def fetch_account_posts(platform, handle):
             f"https://{instance}/api/v1/accounts/{aid}/statuses?limit=20", headers=headers)
         return parse_mastodon_statuses(data, handle)
     if platform == "bluesky":
-        jwt = _bluesky_session()
+        jwt = credentials.bluesky_session()
         headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
         actor = urllib.parse.quote(handle)
         host = "bsky.social" if jwt else "public.api.bsky.app"

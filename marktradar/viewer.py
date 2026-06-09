@@ -158,6 +158,9 @@ class Handler(BaseHTTPRequestHandler):
                     conn, int(q.get("recent_days", ["30"])[0]))})
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
+            elif u.path == "/api/watch":
+                from marktradar import watch
+                _json(self, {"accounts": watch.list_accounts(conn)})
             elif u.path == "/api/langgeo":
                 try:
                     _json(self, _langgeo())
@@ -200,6 +203,21 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/hashtag/delete":
                 b = self._body()
                 _json(self, hashtags.delete(conn, int(b["id"])))
+            elif path == "/api/watch/add":
+                from marktradar import watch
+                b = self._body()
+                _json(self, watch.add(conn, b["platform"], b["handle"],
+                                      entity_id=b.get("entity_id"), label=b.get("label")))
+            elif path == "/api/watch/remove":
+                from marktradar import watch
+                _json(self, watch.remove(conn, int(self._body()["id"])))
+            elif path == "/api/watch/toggle":
+                from marktradar import watch
+                b = self._body()
+                _json(self, watch.set_active(conn, int(b["id"]), bool(b.get("active"))))
+            elif path == "/api/watch/refresh":
+                from marktradar import watch
+                _json(self, watch.refresh(conn))
             elif path == "/api/hashtags/refresh":
                 b = self._body()
                 src = tuple(b["sources"]) if b.get("sources") else ("mastodon", "bluesky", "news")
@@ -491,6 +509,15 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
         <div id=htlist class=muted>lädt…</div>
       </div>
       <div class=panel>
+        <div class=ph><span>WATCHER · AKTEUR-ACCOUNTS</span><button class=btn id=watchrefresh>↻ Posts holen</button></div>
+        <div class=htadd>
+          <select id=watchplat class=htin style="flex:0 0 auto"><option value=mastodon>mastodon</option><option value=bluesky>bluesky</option></select>
+          <input id=watchhandle placeholder="@handle" class=htin>
+          <button class=btn id=watchaddbtn>+ </button>
+        </div>
+        <div id=watchlist class=muted>—</div>
+      </div>
+      <div class=panel>
         <div class=ph><span id=archdr>TRENDS · KOMBINATIONEN (News-Ko-Vorkommen)</span><span class=muted id=arcnote></span></div>
         <div id=httrends class=muted>—</div>
       </div>
@@ -758,7 +785,7 @@ function buildLangCanvas(geo,clMap,langs){
 function renderLangLegend(langs){const body=$('langlegbody');if(!body)return;
   body.innerHTML=(langs||[]).map(l=>`<div class=lgrow title="${esc(l.native||'')}"><span class=lgsw style="background:${l.color}"></span>${esc(l.name)}</div>`).join('');
   $('langlegend').classList.toggle('hide',!LANG_ON);}
-async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();renderTrends();initGlobe(HTDATA.points);
+async function loadGlobe(){HTDATA=await j('api/hashtags');renderHtLegend();renderTrends();initGlobe(HTDATA.points);loadWatch();
   $('globestat').textContent=`${HTDATA.points.length} Geo-Punkte · ${HTDATA.total_posts} Posts`;}
 function renderTrends(){const pr=(HTDATA&&HTDATA.trends)||[];$('httrends').className=pr.length?'':'muted';
   $('httrends').innerHTML=pr.map(p=>`<div class=trrow><span class=trtag style="color:${p.ca}">#${esc(p.a)}</span><span class=trplus>+</span><span class=trtag style="color:${p.cb}">#${esc(p.b)}</span><span class=trn>${p.n}×</span></div>`).join('')||'noch keine Kombinationen';}
@@ -801,6 +828,22 @@ function toggleHt(id,active){POST('api/hashtag/update',{id,active:!!active}).the
 function setColor(id,c){POST('api/hashtag/update',{id,color:c}).then(loadGlobe);}
 async function refreshHt(){const b=$('htrefresh');b.textContent='lädt…';b.disabled=true;
   try{await POST('api/hashtags/refresh',{limit:15});}finally{b.textContent='↻ Quellen abrufen';b.disabled=false;}loadGlobe();}
+let WATCH=[];
+async function loadWatch(){try{WATCH=(await j('api/watch')).accounts||[];}catch(e){WATCH=[];}renderWatch();}
+function renderWatch(){const el=$('watchlist');if(!el)return;el.className=WATCH.length?'':'muted';
+  el.innerHTML=WATCH.map(a=>`<div class="htrow${a.active?'':' off'}" title="${esc(a.platform)}${a.label?' · '+esc(a.label):''}">`+
+    `<span class=srcbadge style="color:${SRCC[a.platform]||'#888'};border-color:${SRCC[a.platform]||'#888'}">${esc(a.platform)}</span>`+
+    `<span class=nm>@${esc(a.handle)}</span>`+
+    `<span class=tog onclick="toggleWatch(${a.id},${a.active?0:1})" title="aktiv/inaktiv">${a.active?'◉':'○'}</span>`+
+    `<span class=x onclick="delWatch(${a.id})" title="entfernen">✕</span></div>`).join('')||'<span class=muted>keine Accounts — Handle eintragen + „+“</span>';}
+async function addWatch(){const handle=$('watchhandle').value.trim();if(!handle)return;
+  const b=$('watchaddbtn');b.textContent='…';b.disabled=true;
+  try{await POST('api/watch/add',{platform:$('watchplat').value,handle});$('watchhandle').value='';await loadWatch();}
+  catch(e){console.warn('watch add failed',e);}finally{b.textContent='+';b.disabled=false;}}
+async function delWatch(id){await POST('api/watch/remove',{id});loadWatch();}
+async function toggleWatch(id,active){await POST('api/watch/toggle',{id,active});loadWatch();}
+async function refreshWatch(){const b=$('watchrefresh');b.textContent='lädt…';b.disabled=true;
+  try{await POST('api/watch/refresh',{});}finally{b.textContent='↻ Posts holen';b.disabled=false;}loadGlobe();}
 function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const renderer=makeRenderer(el);
   const scene=new THREE.Scene();
   const camera=new THREE.PerspectiveCamera(45,el.clientWidth/(el.clientHeight||600),0.002,100);
@@ -856,6 +899,13 @@ function initGlobe(points){disposeScene(GLOBE);const el=$('globecanvas');const r
     m.userData={url:p.url,base,weight:w,term:p.term,lat:p.lat,lon:p.lon};group.add(m);
     const halo=new THREE.Mesh(pgeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:(0.16+0.12*w)*decay,blending:THREE.AdditiveBlending,depthWrite:false}));
     halo.position.copy(pos);halo.scale.setScalar(base*2.7);halo.userData={host:m};group.add(halo);});
+  // Watched-Akteur-Posts: eigener Marker-Typ (Oktaeder), Farbe nach Entitäts-Typ.
+  const wgeo=new THREE.OctahedronGeometry(1,0);
+  ((HTDATA&&HTDATA.watched)||[]).forEach(w=>{
+    if(w.lat==null||w.lon==null)return;
+    const wm=new THREE.Mesh(wgeo,new THREE.MeshBasicMaterial({color:w.color||'#9fb0c8'}));
+    wm.position.copy(ll2v(w.lat,w.lon,1.012));wm.scale.setScalar(0.024);
+    wm.userData={url:w.url,term:w.entity||'',watch:true,lat:w.lat,lon:w.lon};group.add(wm);});
   if(_expired)console.info(`Globe: ${_expired} Marker älter als ${POST_EXPIRY_DAYS}d ausgeblendet (DB unverändert).`);
   // ── Ko-Vorkommen-Arcs: Centroid je Hashtag-Term (Mittel der Einheitsvektoren → Antimeridian-sicher) ──
   const arcGroup=new THREE.Group();scene.add(arcGroup);
@@ -1144,6 +1194,9 @@ $('langtog').onclick=()=>{LANG_ON=!LANG_ON;$('langtog').textContent='🗣 Sprach
 $('lglx').onclick=()=>{const b=$('langlegbody');b.classList.toggle('collapsed');$('lglx').textContent=b.classList.contains('collapsed')?'▸':'▾';};
 $('htaddbtn').onclick=addHt;
 $('htterm').onkeydown=e=>{if(e.key==='Enter')addHt();};
+$('watchaddbtn').onclick=addWatch;
+$('watchhandle').onkeydown=e=>{if(e.key==='Enter')addWatch();};
+$('watchrefresh').onclick=refreshWatch;
 $('scexit').onclick=closeScene;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&SCENE&&!SCENE.controls.isLocked)closeScene();});
 document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{

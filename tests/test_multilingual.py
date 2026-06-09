@@ -141,7 +141,7 @@ def test_fetch_news_builds_correct_url_for_japanese(monkeypatch):
 def test_fetch_bluesky_adds_lang_param_when_provided(monkeypatch):
     captured = {}
 
-    def fake_get(url, as_json=True):
+    def fake_get(url, as_json=True, headers=None):
         captured["url"] = url
         return {"posts": []}
 
@@ -153,7 +153,7 @@ def test_fetch_bluesky_adds_lang_param_when_provided(monkeypatch):
 def test_fetch_bluesky_no_lang_param_when_omitted(monkeypatch):
     captured = {}
 
-    def fake_get(url, as_json=True):
+    def fake_get(url, as_json=True, headers=None):
         captured["url"] = url
         return {"posts": []}
 

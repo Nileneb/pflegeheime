@@ -1,8 +1,9 @@
 """Account-Watching: kuratierte Akteur-Accounts beobachten und ihre Posts ingesten.
 Reine CRUD + Fetch/Parse/Geo/Refresh. Auth optional über marktradar.credentials."""
+import urllib.parse
 from datetime import datetime, timezone
 
-from marktradar import hashtags  # _strip_html, geocode, _get
+from marktradar import credentials, hashtags  # _strip_html, geocode, _get
 
 
 def _now() -> str:
@@ -82,8 +83,30 @@ def parse_bluesky_feed(data, handle) -> list[dict]:
 
 
 def fetch_account_posts(platform: str, handle: str) -> list[dict]:
-    """Placeholder – wird von Task 6 implementiert; monkeypatching in Tests möglich."""
-    raise NotImplementedError(f"fetch_account_posts not yet implemented for {platform}")
+    """Letzte Posts eines beobachteten Accounts → normalisierte Posts. Auth optional."""
+    if platform == "mastodon":
+        cred = credentials.get("mastodon")
+        instance = cred["instance"] if cred else "mastodon.social"
+        headers = {"Authorization": f"Bearer {cred['token']}"} if cred else None
+        acct = urllib.parse.quote(handle)
+        info = hashtags._get(
+            f"https://{instance}/api/v1/accounts/lookup?acct={acct}", headers=headers)
+        aid = (info or {}).get("id")
+        if not aid:
+            return []
+        data = hashtags._get(
+            f"https://{instance}/api/v1/accounts/{aid}/statuses?limit=20", headers=headers)
+        return parse_mastodon_statuses(data, handle)
+    if platform == "bluesky":
+        jwt = credentials.bluesky_session()
+        headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
+        actor = urllib.parse.quote(handle)
+        host = "bsky.social" if jwt else "public.api.bsky.app"
+        data = hashtags._get(
+            f"https://{host}/xrpc/app.bsky.feed.getAuthorFeed?actor={actor}&limit=20",
+            headers=headers)
+        return parse_bluesky_feed(data, handle)
+    raise ValueError(f"unsupported platform: {platform}")
 
 
 def _place_watched_post(conn, account, post):

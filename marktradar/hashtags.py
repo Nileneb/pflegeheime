@@ -83,8 +83,11 @@ GAZ = {
 DE_CENTER = tuple(_langs.by_code("de")["centroid"])  # WHY: unified constant — avoids divergence with languages.LANGUAGES["de"]["centroid"]
 
 
-def _get(url, as_json=True):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+def _get(url, as_json=True, headers=None):
+    h = {"User-Agent": UA, "Accept": "*/*"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         raw = r.read()
     return json.loads(raw) if as_json else raw
@@ -180,8 +183,14 @@ def regeocode(conn, only_missing=False):
 
 # ── Fetcher: liefern Liste {source, url, author, content, location_text, published} ──
 def fetch_mastodon(term, limit=20, instance="mastodon.social"):
+    from marktradar import credentials
+    cred = credentials.get("mastodon")
+    headers = None
+    if cred:
+        instance = cred["instance"]
+        headers = {"Authorization": f"Bearer {cred['token']}"}
     tag = urllib.parse.quote(term.lstrip("#"))
-    data = _get(f"https://{instance}/api/v1/timelines/tag/{tag}?limit={limit}")
+    data = _get(f"https://{instance}/api/v1/timelines/tag/{tag}?limit={limit}", headers=headers)
     out = []
     for s in data or []:
         acc = s.get("account") or {}
@@ -200,13 +209,15 @@ def fetch_mastodon(term, limit=20, instance="mastodon.social"):
 
 
 def fetch_bluesky(term, limit=20, lang=None):
+    from marktradar import credentials
+    jwt = credentials.bluesky_session()
+    headers = {"Authorization": f"Bearer {jwt}"} if jwt else None
+    host = "bsky.social" if jwt else "api.bsky.app"
     q = urllib.parse.quote("#" + term.lstrip("#"))
-    # WHY: public.api.bsky.app antwortet 403 (Cloudflare); api.bsky.app liefert die
-    # unauth. AppView-Suche aus.
-    url = f"https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q={q}&limit={limit}"
+    url = f"https://{host}/xrpc/app.bsky.feed.searchPosts?q={q}&limit={limit}"
     if lang:
         url += f"&lang={urllib.parse.quote(lang)}"
-    data = _get(url)
+    data = _get(url, headers=headers)
     out = []
     for p in (data or {}).get("posts", []):
         au = p.get("author") or {}

@@ -40,9 +40,18 @@ neben den Blender-Renders gesammelt.
 
 ## Parameter (Defaults)
 - `radius_m=320` — geladener Umkreis (Terrain/Straßen/Grün-Kontext).
-- `focus_m=45` — Framing-Fenster ums bbox-Zentrum; die Einrichtung liegt zentral, ein zu
-  weiter Load würde sie sonst zum Fleck schrumpfen.
+- `focus_m=35` — Gebäude innerhalb dieses Radius um den **Fokuspunkt** (Terrain-Mittelpunkt =
+  bbox-Zentrum = Einrichtung) zählen fürs Framing. NICHT um (0,0): Blosm `relativeToInitialImport`
+  referenziert alle Importe auf den ersten der Session, Häuser liegen also fern vom Ursprung.
+- `min_frame_m=50` — Mindest-Fenster; ein einzelnes großes Gebäude füllt sonst formfüllend als
+  Wand das Bild. `dist_factor=1.5` — Kamera-Abstand als Vielfaches der Subjekt-Größe.
 - `n_views=8`, `resolution=(1280, 960)`, `elevation_deg=20`.
+
+## Batch
+`run_traeger("Bergische Diakonie")` rendert alle geokodierten Einrichtungen (ein Ordner +
+photos.json je Adresse), `delay_s`/`retries` gegen Overpass-429/504. CLI: `--traeger "<Name>"`.
+Bei langem Live-Lauf via blender-mcp bricht der Socket-Client evtl. ab („No data received"),
+Blender rendert aber im Hintergrund durch → Fortschritt über die `photos.json`-mtimes pollen.
 
 ## Bekannte Grenzen
 - OSM/Blosm liefert keine 3D-Verkehrsschilder.

@@ -59,13 +59,24 @@ def _apply_solid_look():
     bpy.context.scene.view_settings.view_transform = "Standard"  # Solid-Look ohne Filmic-Mute
 
 
-def _scene_center_and_size(focus_m=45.0):
-    """Frame auf die Einrichtung: gebäudeartige Objekte innerhalb focus_m vom bbox-Zentrum
-    (= Einrichtung, da die bbox darauf zentriert ist). So bleibt das Gebäude groß im Bild,
-    auch wenn drumherum ein weites Viertel geladen ist. Welt-Koordinaten."""
+def _focus_point():
+    """Welt-Position der Einrichtung = Zentrum der geladenen bbox = Terrain-Mittelpunkt. WHY:
+    Blosm relativeToInitialImport referenziert alle Importe auf den ERSTEN der Session, also
+    liegen Häuser fern von (0,0); der Terrain-Mittelpunkt ist je Haus das echte bbox-Zentrum."""
+    import bpy
     from mathutils import Vector
+    terr = bpy.data.objects.get("Terrain")
+    return _world_bbox_center(terr) if terr else Vector((0, 0, 0))
+
+
+def _scene_center_and_size(focus_m=28.0):
+    """Frame auf die Einrichtung: gebäudeartige Objekte innerhalb focus_m vom Fokuspunkt
+    (bbox-Zentrum/Terrain-Mitte = Einrichtung). So bleibt das Gebäude groß im Bild, auch wenn
+    drumherum ein weites Viertel geladen ist. Welt-Koordinaten."""
+    from mathutils import Vector
+    fp = _focus_point()
     blds = _frame_objects()
-    near = [o for o in blds if _world_bbox_center(o).xy.length <= focus_m] or blds
+    near = [o for o in blds if (_world_bbox_center(o) - fp).xy.length <= focus_m] or blds
     pts = []
     for o in near:
         for c in o.bound_box:
@@ -77,10 +88,12 @@ def _scene_center_and_size(focus_m=45.0):
     return (lo + hi) / 2, max((hi - lo).x, (hi - lo).y, (hi - lo).z, 10.0)
 
 
-def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20, focus_m=45.0):
+def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20,
+                 focus_m=28.0, dist_factor=1.2):
     """Kamera-Orbit um das Einrichtungs-Gebäude, n_views Renders → view_NN.png. Manifest-Rows
-    zurück. focus_m = Radius um das bbox-Zentrum, in dem Gebäude fürs Framing zählen — ein zu
-    weiter Load würde die Einrichtung sonst zum Fleck schrumpfen."""
+    zurück. focus_m = Radius um das bbox-Zentrum, in dem Gebäude fürs Framing zählen (enger =
+    Einrichtung füllt das Bild). dist_factor = Kamera-Abstand als Vielfaches der Subjekt-Größe
+    (kleiner = näher dran). WHY: zu weites Fenster/Abstand lässt die Häuser zu klein wirken."""
     import bpy
     import math as _m
     import datetime as _dt
@@ -93,7 +106,7 @@ def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20
     _apply_solid_look()
 
     center, size = _scene_center_and_size(focus_m)
-    dist = size * 1.6
+    dist = size * dist_factor
     z = center.z + dist * _m.sin(_m.radians(elevation_deg))
     flat = dist * _m.cos(_m.radians(elevation_deg))
 
@@ -101,6 +114,7 @@ def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20
     bpy.context.collection.objects.link(target)
     target.location = center
     cam_data = bpy.data.cameras.new("OrbitCam")
+    cam_data.clip_end = 100000.0  # Terrain liegt auf realer Höhe → großzügige Clip-Distanz
     cam = bpy.data.objects.new("OrbitCam", cam_data)
     bpy.context.collection.objects.link(cam)
     con = cam.constraints.new("TRACK_TO")
@@ -143,12 +157,14 @@ def run(facility, *, radius_m=320, n_views=8, out_root="out/buildings", db_path=
 
 
 def run_traeger(traeger="Bergische Diakonie", *, radius_m=320, n_views=8,
-                out_root="out/buildings", db_path="pflege.db", only_ids=None):
+                out_root="out/buildings", db_path="pflege.db", only_ids=None,
+                delay_s=5.0, retries=2):
     """Alle geokodierten Einrichtungen eines Trägers nacheinander rendern (hausweise: ein Ordner
-    + photos.json je Adresse). Fehler je Einrichtung werden gesammelt und reported — eine flaky
-    Overpass/ArcGIS-Antwort darf den Batch nicht killen, wird aber NICHT verschluckt. only_ids
-    erlaubt Chunking (Teilmenge der ids)."""
+    + photos.json je Adresse). delay_s Pause zwischen Einrichtungen + Retry mit Backoff gegen
+    Overpass-429/504 (Rate-Limit). Fehler je Einrichtung werden gesammelt und reported — flaky
+    Antworten dürfen den Batch nicht killen, werden aber NICHT verschluckt. only_ids = Chunking."""
     import sqlite3
+    import time
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -161,16 +177,26 @@ def run_traeger(traeger="Bergische Diakonie", *, radius_m=320, n_views=8,
         wanted = set(only_ids)
         units = [u for u in units if u["id"] in wanted]
     done, errors = [], []
-    for u in units:
-        try:
-            out_dir, _, stats = run(u["id"], radius_m=radius_m, n_views=n_views,
-                                    out_root=out_root, db_path=db_path)
-            done.append({"id": u["id"], "name": u["name"], "out": out_dir,
-                         "object_count": stats["object_count"]})
-            print(f"OK   {u['name']} -> {out_dir}")
-        except Exception as e:  # WHY: flaky Overpass je Einrichtung; weiterlaufen, Fehler reporten
-            errors.append({"id": u["id"], "name": u["name"], "error": str(e)})
-            print(f"FAIL {u['name']}: {e}")
+    for idx, u in enumerate(units):
+        if idx:
+            time.sleep(delay_s)  # WHY: Overpass 429/504 bei zu schnellen aufeinanderfolgenden Requests
+        last = None
+        for attempt in range(retries + 1):
+            try:
+                out_dir, _, stats = run(u["id"], radius_m=radius_m, n_views=n_views,
+                                        out_root=out_root, db_path=db_path)
+                done.append({"id": u["id"], "name": u["name"], "out": out_dir,
+                             "object_count": stats["object_count"]})
+                print(f"OK   {u['name']} -> {out_dir}")
+                break
+            except Exception as e:
+                last = e
+                if attempt < retries:
+                    time.sleep(delay_s * (attempt + 2))  # Backoff für transiente Overpass-Fehler
+                    print(f"retry {u['name']} ({attempt + 1}/{retries})")
+        else:
+            errors.append({"id": u["id"], "name": u["name"], "error": str(last)})
+            print(f"FAIL {u['name']}: {last}")
     return {"done": len(done), "failed": len(errors), "results": done, "errors": errors}
 
 

@@ -72,6 +72,20 @@ def test_score_is_bounded_0_1():
         assert 0.0 <= ranking.score_post(p)["score"] <= 1.0
 
 
+def test_source_trust_institution_vs_unverified():
+    assert ranking.source_trust("RKI aktuell", "https://www.rki.de/x.xml", "DE") == "institution"
+    assert ranking.source_trust("BMG Pressemitteilungen", "https://bundesgesundheitsministerium.de/p.xml") == "institution"
+    assert ranking.source_trust("Karl-Ludwigs Pflegeblog", "https://random-blog.example/feed") == "unverified"
+
+
+def test_source_gate_default_deny():
+    # nur verifizierte Institutionen passieren das Gate automatisch
+    assert ranking.passes_source_gate("WHO News", "https://www.who.int/feed.xml", "INT") is True
+    assert ranking.passes_source_gate("EU-Kommission Presscorner", "https://ec.europa.eu/rss") is True
+    assert ranking.passes_source_gate("Irgendein Newsblog", "https://blog.example/rss") is False
+    assert ranking.passes_source_gate("", "", "") is False
+
+
 def test_rank_posts_sorts_readable_trusted_first():
     posts = [
         {"lang_code": "ar", "source": "bluesky", "author": "a", "url": "u1", "published": "2026-06-09"},

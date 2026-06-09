@@ -179,12 +179,13 @@ def stats(conn, recent_days: int = 30) -> list[dict]:
     Noise im Bodensatz. Auto-Disable findet NICHT statt (soft ranking)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=recent_days)).isoformat()
     rows = conn.execute(
-        "SELECT s.id, s.name, s.region, s.tier, s.enabled, s.last_status, s.last_fetched, "
+        "SELECT s.id, s.name, s.url, s.region, s.tier, s.enabled, s.last_status, s.last_fetched, "
         "  COUNT(a.id) AS total, "
         "  SUM(CASE WHEN a.relevant=1 THEN 1 ELSE 0 END) AS relevant, "
         "  SUM(CASE WHEN a.published >= ? THEN 1 ELSE 0 END) AS recent "
         "FROM sources s LEFT JOIN articles a ON a.source_id = s.id "
         "GROUP BY s.id", (cutoff,)).fetchall()
+    from marktradar import ranking
     out = []
     for r in rows:
         total = r["total"] or 0
@@ -196,6 +197,8 @@ def stats(conn, recent_days: int = 30) -> list[dict]:
             "recent": r["recent"] or 0,
             "ratio": round(rel / total, 3) if total else 0.0,
             "score": round(_wilson(rel, total), 4),
+            # Trust-Klasse (institution = auto-add-fähig, sonst manueller Gate).
+            "trust": ranking.source_trust(r["name"], r["url"], r["region"]),
         })
     out.sort(key=lambda x: (x["score"], x["recent"], x["total"]), reverse=True)
     return out

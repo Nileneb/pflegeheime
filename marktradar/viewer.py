@@ -1150,17 +1150,20 @@ async function loadSources(){
   const active=rows.filter(s=>s.enabled).length;
   $('qstat').textContent=`${rows.length} Quellen · ${active} aktiv · Ø-Score ${(rows.reduce((a,s)=>a+s.score,0)/(rows.length||1)).toFixed(3)}`;
   $('qtable').innerHTML=
-    '<tr><th class=qrank>#</th><th>Quelle</th><th>Reg</th><th>Tier</th>'+
+    '<tr><th class=qrank>#</th><th>Quelle</th><th>Reg</th><th>Tier</th><th>Trust</th>'+
     '<th class=num>Artikel</th><th class=num>relevant</th><th class=num>Yield</th>'+
     '<th class=num>30d</th><th>Score</th><th>Status</th></tr>'+
     rows.map((s,i)=>{
       const w=Math.round(100*s.score/smax);
       const col=s.score>=0.5?'#2ecc71':s.score>=0.25?'#f0a830':'#ff6b5b';
+      const inst=s.trust==='institution';
+      const tcol=inst?'#2ecc71':'#7a8aa0';
       return `<tr class="${s.enabled?'':'qoff'}">`+
         `<td class=qrank>${i+1}</td>`+
         `<td>${esc(s.name)}</td>`+
         `<td>${esc(s.region||'')}</td>`+
         `<td class=num>${s.tier||''}</td>`+
+        `<td><span class=trustbadge style="color:${tcol};border-color:${tcol}" title="institution = auto-add-fähig; unverified = manuelle Freigabe">${inst?'⚖ Inst':'· unverif'}</span></td>`+
         `<td class=num>${s.total}</td>`+
         `<td class=num>${s.relevant}</td>`+
         `<td class=num>${(s.ratio*100).toFixed(0)}%</td>`+

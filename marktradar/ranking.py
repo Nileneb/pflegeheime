@@ -143,3 +143,21 @@ def rank_posts(posts: list[dict]) -> list[dict]:
     scored = [{**p, **score_post(p)} for p in posts]
     scored.sort(key=lambda p: (p["score"], p.get("published") or ""), reverse=True)
     return scored
+
+
+# ── Quellen-Trust-Gate: Guardrail gegen Datensatz-Verschmutzung ──────────────
+def source_trust(name: str | None, url: str = "", region: str = "") -> str:
+    """Trust-Klasse einer (potenziellen) RSS-Quelle: `institution` (verifizierbare
+    Behörde/Institution via Registry/Marker) | `unverified` (alles andere)."""
+    ident = f"{name or ''} {url or ''} {region or ''}".lower()
+    if match_institution(ident) or any(m in ident for m in INSTITUTION_MARKERS):
+        return "institution"
+    return "unverified"
+
+
+def passes_source_gate(name: str | None, url: str = "", region: str = "") -> bool:
+    """Guardrail für AUTOMATISCHE Quellen-Aufnahme (Default-Deny): nur verifizierte
+    Institutionen dürfen automatisch in den Datensatz. Alles andere wartet auf
+    manuelle Freigabe — sonst verschmutzt unkontrollierter Auto-Add den Bestand.
+    WHY: lieber eine echte Institution verpassen als Noise dauerhaft aufnehmen."""
+    return source_trust(name, url, region) == "institution"

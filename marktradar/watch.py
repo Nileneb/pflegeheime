@@ -43,3 +43,39 @@ def remove(conn, account_id) -> dict:
     conn.execute("DELETE FROM watched_accounts WHERE id=?", (account_id,))
     conn.commit()
     return {"removed": account_id}
+
+
+def parse_mastodon_statuses(data, handle) -> list[dict]:
+    """Mastodon /accounts/:id/statuses → normalisierte Posts."""
+    out = []
+    for s in data or []:
+        if not s.get("url"):
+            continue
+        out.append({
+            "source": "mastodon", "url": s.get("url"), "author": handle,
+            "content": hashtags._strip_html(s.get("content"))[:280],
+            "location_text": "", "published": s.get("created_at"),
+        })
+    return out
+
+
+def parse_bluesky_feed(data, handle) -> list[dict]:
+    """Bluesky app.bsky.feed.getAuthorFeed → normalisierte Posts."""
+    out = []
+    for item in (data or {}).get("feed", []):
+        p = item.get("post") or {}
+        rec = p.get("record") or {}
+        au = p.get("author") or {}
+        rkey = (p.get("uri") or "").rsplit("/", 1)[-1]
+        h = au.get("handle") or handle
+        url = f"https://bsky.app/profile/{h}/post/{rkey}" if rkey else None
+        if not url:
+            continue
+        out.append({
+            "source": "bluesky", "url": url,
+            "author": au.get("displayName") or h,
+            "content": (rec.get("text") or "")[:280],
+            "location_text": (au.get("description") or "")[:60],
+            "published": rec.get("createdAt"),
+        })
+    return out

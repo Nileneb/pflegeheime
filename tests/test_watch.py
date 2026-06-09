@@ -22,3 +22,24 @@ def test_add_list_toggle_remove(conn):
     assert watch.list_accounts(conn)[0]["active"] == 0
     watch.remove(conn, a["id"])
     assert watch.list_accounts(conn) == []
+
+
+def test_parse_mastodon_statuses():
+    data = [{"url": "https://m.social/@x/1", "content": "<p>Hallo &amp; Welt</p>",
+             "created_at": "2026-06-09T10:00:00Z"}]
+    out = watch.parse_mastodon_statuses(data, "bmg_bund")
+    assert out == [{"source": "mastodon", "url": "https://m.social/@x/1",
+                    "author": "bmg_bund", "content": "Hallo & Welt",
+                    "location_text": "", "published": "2026-06-09T10:00:00Z"}]
+
+
+def test_parse_bluesky_feed():
+    data = {"feed": [{"post": {
+        "uri": "at://did:plc:abc/app.bsky.feed.post/xyz",
+        "author": {"handle": "bmg.bsky.social", "displayName": "BMG"},
+        "record": {"text": "Pflege news", "createdAt": "2026-06-09T11:00:00Z"}}}]}
+    out = watch.parse_bluesky_feed(data, "bmg.bsky.social")
+    assert out[0]["source"] == "bluesky"
+    assert out[0]["url"] == "https://bsky.app/profile/bmg.bsky.social/post/xyz"
+    assert out[0]["content"] == "Pflege news"
+    assert out[0]["published"] == "2026-06-09T11:00:00Z"

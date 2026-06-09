@@ -89,11 +89,12 @@ def _scene_center_and_size(focus_m=28.0):
 
 
 def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20,
-                 focus_m=28.0, dist_factor=1.2):
+                 focus_m=35.0, dist_factor=1.5, min_frame_m=50.0):
     """Kamera-Orbit um das Einrichtungs-Gebäude, n_views Renders → view_NN.png. Manifest-Rows
-    zurück. focus_m = Radius um das bbox-Zentrum, in dem Gebäude fürs Framing zählen (enger =
-    Einrichtung füllt das Bild). dist_factor = Kamera-Abstand als Vielfaches der Subjekt-Größe
-    (kleiner = näher dran). WHY: zu weites Fenster/Abstand lässt die Häuser zu klein wirken."""
+    zurück. focus_m = Radius um das bbox-Zentrum, in dem Gebäude fürs Framing zählen.
+    dist_factor = Kamera-Abstand als Vielfaches der Subjekt-Größe. min_frame_m = Mindest-Fenster,
+    damit ein einzelnes großes Gebäude nicht formfüllend als Wand das Bild sprengt. WHY: zu weit
+    → Häuser zu klein; zu nah → nur eine Wand. Clamp deckt beide Extreme (dicht vs. Einzelhaus)."""
     import bpy
     import math as _m
     import datetime as _dt
@@ -106,6 +107,7 @@ def render_orbit(out_dir, *, n_views=8, resolution=(1280, 960), elevation_deg=20
     _apply_solid_look()
 
     center, size = _scene_center_and_size(focus_m)
+    size = max(size, min_frame_m)
     dist = size * dist_factor
     z = center.z + dist * _m.sin(_m.radians(elevation_deg))
     flat = dist * _m.cos(_m.radians(elevation_deg))

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, geo, hashtags, organigram, query, sources
+from marktradar import db, feeds, geo, hashtags, organigram, query, sources
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 _LANGGEO_CACHE = None
@@ -90,6 +90,15 @@ def _json(handler, obj, code=200):
     handler.wfile.write(body)
 
 
+def _xml(handler, text, code=200, ctype="application/rss+xml; charset=utf-8"):
+    body = text.encode("utf-8")
+    handler.send_response(code)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -112,7 +121,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse()
         conn = _db()
         try:
-            if u.path == "/api/overview":
+            if u.path in ("/feed.xml", "/rss"):
+                _xml(self, feeds.rss(conn, int(q.get("limit", ["50"])[0]),
+                                     q.get("tag", [None])[0]))
+            elif u.path == "/api/overview":
                 _json(self, query.overview(conn))
             elif u.path == "/api/feed":
                 since = query.get_meta(conn, "last_seen", "1970-01-01")

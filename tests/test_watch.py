@@ -43,3 +43,47 @@ def test_parse_bluesky_feed():
     assert out[0]["url"] == "https://bsky.app/profile/bmg.bsky.social/post/xyz"
     assert out[0]["content"] == "Pflege news"
     assert out[0]["published"] == "2026-06-09T11:00:00Z"
+
+
+def test_place_watched_post_uses_entity_institution(conn):
+    conn.execute("INSERT INTO entities(id,name,type) VALUES (1,'RKI','behoerde')")
+    acc = watch.add(conn, "mastodon", "rki", entity_id=1)
+    lat, lon = watch._place_watched_post(conn, acc, {"location_text": ""})
+    assert abs(lat - 52.52) < 0.01 and abs(lon - 13.40) < 0.01
+
+
+def test_place_watched_post_falls_back_to_profile_then_none(conn):
+    acc = watch.add(conn, "bluesky", "rando")
+    lat, lon = watch._place_watched_post(conn, acc, {"location_text": "Hamburg Redaktion"})
+    assert abs(lat - 53.55) < 0.01
+    lat2, lon2 = watch._place_watched_post(conn, acc, {"location_text": "nirgendwo-xyz"})
+    assert lat2 is None and lon2 is None
+
+
+def test_refresh_ingests_account_posts(conn, monkeypatch):
+    conn.execute("INSERT INTO entities(id,name,type) VALUES (1,'RKI','behoerde')")
+    watch.add(conn, "mastodon", "rki", entity_id=1)
+    monkeypatch.setattr(watch, "fetch_account_posts", lambda platform, handle: [
+        {"source": "mastodon", "url": "https://m/rki/1", "author": "rki",
+         "content": "c", "location_text": "", "published": "2026-06-09T10:00:00Z"}])
+    res = watch.refresh(conn)
+    assert res["added"] == 1 and res["accounts"] == 1 and res["errors"] == []
+    row = conn.execute("SELECT entity_id,lat FROM watched_posts WHERE url='https://m/rki/1'").fetchone()
+    assert row["entity_id"] == 1 and abs(row["lat"] - 52.52) < 0.01
+    assert watch.refresh(conn)["added"] == 0  # idempotent
+
+
+def test_refresh_isolates_account_errors(conn, monkeypatch):
+    watch.add(conn, "mastodon", "a")
+    watch.add(conn, "mastodon", "b")
+
+    def flaky(platform, handle):
+        if handle == "a":
+            raise ConnectionError("down")
+        return [{"source": "mastodon", "url": "https://m/b/1", "author": "b",
+                 "content": "c", "location_text": "", "published": None}]
+
+    monkeypatch.setattr(watch, "fetch_account_posts", flaky)
+    res = watch.refresh(conn)
+    assert res["added"] == 1
+    assert any("a" in e for e in res["errors"])

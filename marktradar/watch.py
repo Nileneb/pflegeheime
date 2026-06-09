@@ -79,3 +79,58 @@ def parse_bluesky_feed(data, handle) -> list[dict]:
             "published": rec.get("createdAt"),
         })
     return out
+
+
+def fetch_account_posts(platform: str, handle: str) -> list[dict]:
+    """Placeholder – wird von Task 6 implementiert; monkeypatching in Tests möglich."""
+    raise NotImplementedError(f"fetch_account_posts not yet implemented for {platform}")
+
+
+def _place_watched_post(conn, account, post):
+    """Geo: verknüpfte Institution (Sitz) → Profil-Ort (Gazetteer) → kein Punkt."""
+    from marktradar import ranking
+    if account.get("entity_id"):
+        ent = conn.execute("SELECT name FROM entities WHERE id=?",
+                           (account["entity_id"],)).fetchone()
+        if ent:
+            # WHY: match_institution sucht Substrings in Fließtext; kanonischer Name
+            # "RKI" matched nie "rki " (Trailing-Space-Marker) → direkt über INSTITUTIONS
+            # nach name nachschlagen, sonst Fallback auf Substring-Suche mit Leerzeichen.
+            name = ent["name"]
+            inst = next((i for i in ranking.INSTITUTIONS if i["name"] == name), None)
+            if inst is None:
+                inst = ranking.match_institution(name + " ")
+            if inst:
+                return (inst["lat"], inst["lon"])
+    ll = hashtags.geocode(post.get("location_text"))
+    if ll:
+        return (ll[0], ll[1])
+    return (None, None)
+
+
+def refresh(conn) -> dict:
+    """Je aktivem Account die letzten Posts holen, idempotent in watched_posts.
+    Fehler je Account isoliert + im Report (NICHT verschluckt)."""
+    rows = conn.execute("SELECT * FROM watched_accounts WHERE active=1").fetchall()
+    added, errors, now = 0, [], _now()
+    for r in rows:
+        acc = dict(r)
+        try:
+            posts = fetch_account_posts(acc["platform"], acc["handle"])
+        except Exception as e:  # WHY: ein Account down → andere laufen weiter
+            errors.append(f"{acc['platform']}:{acc['handle']}: {type(e).__name__}: {e}")
+            continue
+        for p in posts:
+            if not p.get("url"):
+                continue
+            lat, lon = _place_watched_post(conn, acc, p)
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO watched_posts"
+                "(account_id,entity_id,url,author,content,lat,lon,published,fetched_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (acc["id"], acc["entity_id"], p["url"], p.get("author"),
+                 p.get("content"), lat, lon, p.get("published"), now))
+            if cur.rowcount:
+                added += 1
+    conn.commit()
+    return {"added": added, "accounts": len(rows), "errors": errors}

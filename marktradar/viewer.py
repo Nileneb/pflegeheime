@@ -105,6 +105,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # WHY: stdlib-Default spammt stderr pro Request
         pass
 
+    def do_HEAD(self):
+        # WHY: Feed-Reader/Crawler (Feedly) prüfen den Feed per HEAD VOR dem GET;
+        # BaseHTTPRequestHandler ohne do_HEAD → 501 → "dead feed". 200 + Content-Type, kein Body.
+        u = urlparse(self.path)
+        ctype = ("application/rss+xml; charset=utf-8" if u.path in ("/feed.xml", "/rss")
+                 else "text/html; charset=utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)

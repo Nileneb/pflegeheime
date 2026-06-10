@@ -144,6 +144,18 @@ def add_source(name: str, url: str, type: str = "rss", tier: int = 1,
 
 
 @mcp.tool()
+def archive_document(title: str, content: str,
+                     source_name: str = "Internes Archiv",
+                     published: str | None = None) -> dict:
+    """Speichert ein internes Dokument (Rundschreiben, Protokoll, Hausintern)
+    in der Wissensbasis. Erstellt die Archiv-Quelle automatisch wenn nötig.
+    Volle Pipeline: LLM-Klassifikation · Embedding · Entity-Tags · Hashtag-Verlinkung.
+    published: ISO-8601-String optional, default = jetzt."""
+    from marktradar import ingest
+    return ingest.archive_document(_conn, title, content, source_name, published)
+
+
+@mcp.tool()
 def search_heime(query_text: str, limit: int = 20) -> list[dict]:
     """Durchsucht die Heim-/Träger-Basis (Name/Träger/Ort)."""
     return query.search_heime(_conn, query_text, limit)

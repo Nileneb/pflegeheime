@@ -239,6 +239,25 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, hashtags.tag_articles(
                     conn, None, auto_create=bool(b.get("auto_create", True)),
                     limit=int(b.get("limit", 400))))
+            elif path == "/api/sources/add":
+                b = self._body()
+                url = (b.get("url") or "").strip()
+                if not url:
+                    url = "archive://" + re.sub(r"[^a-z0-9]+", "-",
+                                                b["name"].lower()).strip("-")
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO sources(name,type,url,tier,region,enabled)"
+                    " VALUES (?,?,?,?,?,1)",
+                    (b["name"], b.get("type", "rss"), url,
+                     int(b.get("tier", 1)), b.get("region", "DE")))
+                conn.commit()
+                _json(self, {"added": bool(cur.rowcount), "name": b["name"]})
+            elif path == "/api/sources/toggle":
+                b = self._body()
+                conn.execute("UPDATE sources SET enabled=? WHERE id=?",
+                             (1 if b["enabled"] else 0, int(b["id"])))
+                conn.commit()
+                _json(self, {"ok": True})
             elif path == "/api/sources/seed":
                 # idempotent (INSERT OR IGNORE): zieht neue Seed-Quellen in die
                 # bestehende Prod-DB (entrypoint-Seed läuft nur bei leerer DB).
@@ -325,6 +344,17 @@ a{color:inherit;text-decoration:none}
 .qbar{display:inline-block;height:6px;border-radius:3px;background:#2ecc71;vertical-align:middle}
 .qbartrk{display:inline-block;width:90px;height:6px;border-radius:3px;background:#16202f;vertical-align:middle;margin-right:6px}
 .qoff td{opacity:.45}
+.qfilters{display:flex;gap:6px;margin-bottom:12px}
+.qfilter{padding:4px 12px;border:1px solid var(--ln);border-radius:5px;color:var(--mut);cursor:pointer;font-size:11px;letter-spacing:.5px}
+.qfilter.on{background:var(--accent);color:#06142e;border-color:var(--accent);font-weight:600}
+.qadd{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+.qadd input,.qadd select{background:#0c121c;border:1px solid var(--ln);color:var(--fg);border-radius:5px;padding:5px 8px;font:inherit;font-size:11px}
+.qadd input{width:180px}
+.qadd select{min-width:80px}
+.qtypebadge{font-size:8px;border:1px solid;border-radius:3px;padding:1px 4px;letter-spacing:1px;text-transform:uppercase}
+.qtog{background:none;border:1px solid var(--ln);border-radius:4px;color:var(--mut);cursor:pointer;font-size:10px;padding:2px 6px}
+.qtog:hover{border-color:#fff;color:#fff}
+.qsyshint{font-size:10px;color:var(--mut);margin-bottom:10px;padding:6px 8px;border:1px solid #1e2733;border-radius:5px;background:#080e18}
 .row.fresh{background:#0d1f15;border-left:2px solid #2ecc71;padding-left:6px;margin-left:-8px}
 .dt{color:var(--mut);font-size:11px}
 .ev{font-size:9px;border:1px solid;border-radius:3px;padding:2px 4px;text-align:center;letter-spacing:1px}
@@ -544,6 +574,20 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
   <div class=panel>
     <div class=ph><span>QUELLEN-RANKING · dynamische Güte (Wilson-Lower-Bound auf Relevanz-Yield)</span><span class=muted id=qstat></span></div>
     <div class=qhint>Score = untere Konfidenzgrenze des Relevanz-Anteils. Stabil relevante Quellen mit Volumen steigen; kleine/noisy Quellen sinken in den Bodensatz. Kein Auto-Disable — nur Ranking.</div>
+    <div class=qsyshint>RSS = Ingest-Pipeline (Artikel, LLM-Klassifizierung) · Archiv = hausinterne Dokumente via MCP · Mastodon/Bluesky/News = Hashtag-Globus (separate Aggregation)</div>
+    <div class=qfilters>
+      <span class="qfilter on" data-f=all onclick="setQFilter('all')">ALLE</span>
+      <span class=qfilter data-f=rss onclick="setQFilter('rss')">RSS</span>
+      <span class=qfilter data-f=archive onclick="setQFilter('archive')">ARCHIV</span>
+    </div>
+    <div class=qadd>
+      <input id=qaname placeholder="Name der Quelle">
+      <input id=qaurl placeholder="https://… (leer = auto bei Archiv)">
+      <select id=qatype><option value=rss>rss</option><option value=archive>archiv</option></select>
+      <select id=qatier><option value=1>Tier 1</option><option value=2>Tier 2</option><option value=3>Tier 3</option></select>
+      <select id=qaregion><option>DE</option><option>NRW</option><option>BY</option><option>BW</option><option>NI</option><option>SH</option><option>EU</option><option>INT</option></select>
+      <button class=btn id=qaaddbtn onclick="addSource()">+ Quelle</button>
+    </div>
     <table class=qtable id=qtable></table>
   </div>
 </section>
@@ -1270,23 +1314,36 @@ document.querySelectorAll('.tab[data-t]').forEach(t=>t.onclick=()=>{
 $('markseen').onclick=async()=>{await fetch('api/mark_seen',{method:'POST'});refresh();};
 
 async function loadGraph(){renderGraph(await j('api/graph'));}
+let QFILTER='all',QDATA=[];
+function setQFilter(f){
+  QFILTER=f;
+  document.querySelectorAll('.qfilter').forEach(t=>t.classList.toggle('on',t.dataset.f===f));
+  renderSourcesTable();
+}
 async function loadSources(){
-  const d=await j('api/sources'); const rows=d.sources||[];
+  const d=await j('api/sources');QDATA=d.sources||[];
+  renderSourcesTable();
+}
+function renderSourcesTable(){
+  const rows=QFILTER==='all'?QDATA:QDATA.filter(s=>s.type===QFILTER);
   const smax=Math.max(0.01,...rows.map(s=>s.score));
-  const active=rows.filter(s=>s.enabled).length;
-  $('qstat').textContent=`${rows.length} Quellen · ${active} aktiv · Ø-Score ${(rows.reduce((a,s)=>a+s.score,0)/(rows.length||1)).toFixed(3)}`;
+  const active=QDATA.filter(s=>s.enabled).length;
+  $('qstat').textContent=`${QDATA.length} Quellen · ${active} aktiv · Ø-Score ${(QDATA.reduce((a,s)=>a+s.score,0)/(QDATA.length||1)).toFixed(3)}`;
+  const TYPC={rss:'#5b8def',archive:'#f0a830'};
   $('qtable').innerHTML=
-    '<tr><th class=qrank>#</th><th>Quelle</th><th>Reg</th><th>Tier</th><th>Trust</th>'+
+    '<tr><th class=qrank>#</th><th>Quelle</th><th>Typ</th><th>Reg</th><th>Tier</th><th>Trust</th>'+
     '<th class=num>Artikel</th><th class=num>relevant</th><th class=num>Yield</th>'+
-    '<th class=num>30d</th><th>Score</th><th>Status</th></tr>'+
+    '<th class=num>30d</th><th>Score</th><th>Status</th><th></th></tr>'+
     rows.map((s,i)=>{
       const w=Math.round(100*s.score/smax);
       const col=s.score>=0.5?'#2ecc71':s.score>=0.25?'#f0a830':'#ff6b5b';
       const inst=s.trust==='institution';
       const tcol=inst?'#2ecc71':'#7a8aa0';
+      const typc=TYPC[s.type]||'#7a8aa0';
       return `<tr class="${s.enabled?'':'qoff'}">`+
         `<td class=qrank>${i+1}</td>`+
         `<td>${esc(s.name)}</td>`+
+        `<td><span class=qtypebadge style="color:${typc};border-color:${typc}">${esc(s.type||'rss')}</span></td>`+
         `<td>${esc(s.region||'')}</td>`+
         `<td class=num>${s.tier||''}</td>`+
         `<td><span class=trustbadge style="color:${tcol};border-color:${tcol}" title="institution = auto-add-fähig; unverified = manuelle Freigabe">${inst?'⚖ Inst':'· unverif'}</span></td>`+
@@ -1295,8 +1352,28 @@ async function loadSources(){
         `<td class=num>${(s.ratio*100).toFixed(0)}%</td>`+
         `<td class=num>${s.recent}</td>`+
         `<td><span class=qbartrk><span class=qbar style="width:${w}%;background:${col}"></span></span>${s.score.toFixed(3)}</td>`+
-        `<td class=muted>${esc((s.last_status||'').slice(0,22))}</td></tr>`;
+        `<td class=muted>${esc((s.last_status||'').slice(0,22))}</td>`+
+        `<td><button class=qtog onclick="toggleSource(${s.id},${!s.enabled})">${s.enabled?'off':'on'}</button></td></tr>`;
     }).join('');
+}
+async function addSource(){
+  const name=$('qaname').value.trim();
+  if(!name)return;
+  const url=$('qaurl').value.trim();
+  const type=$('qatype').value;
+  const tier=parseInt($('qatier').value);
+  const region=$('qaregion').value;
+  const btn=$('qaaddbtn');btn.disabled=true;
+  try{
+    const r=await(await POST('api/sources/add',{name,url,type,tier,region})).json();
+    if(r.added){$('qaname').value='';$('qaurl').value='';}
+    else alert('URL bereits vorhanden oder Name fehlt');
+    loadSources();
+  }finally{btn.disabled=false;}
+}
+async function toggleSource(id,enabled){
+  await POST('api/sources/toggle',{id,enabled});
+  loadSources();
 }
 async function refresh(){
   const [o,f]=await Promise.all([j('api/overview'),j('api/feed')]);

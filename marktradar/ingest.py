@@ -170,6 +170,58 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
             "stance": stance, "hashtags": ht, "errors": errors, "sources": len(srcs)}
 
 
+def archive_document(conn, title: str, content: str,
+                     source_name: str = "Internes Archiv",
+                     published: str | None = None) -> dict:
+    """Legt ein internes Dokument als Artikel ab und läuft durch volle Pipeline:
+    classify → embed → entity-tag → hashtag-tag. Immer relevant=1."""
+    import hashlib
+    slug = re.sub(r"[^a-z0-9]+", "-", source_name.lower()).strip("-")
+    src_url = f"archive://{slug}"
+
+    conn.execute(
+        "INSERT OR IGNORE INTO sources(name,type,url,tier,region,enabled) VALUES (?,?,?,?,?,1)",
+        (source_name, "archive", src_url, 1, "DE"))
+    conn.commit()
+    source_id = conn.execute("SELECT id FROM sources WHERE url=?", (src_url,)).fetchone()["id"]
+
+    art_hash = hashlib.md5(title.encode()).hexdigest()[:8]
+    art_url = f"archive://{slug}/{art_hash}"
+    now = datetime.now(timezone.utc).isoformat()
+    pub = published or now
+
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO articles"
+        "(source_id,source_domain,guid,link,title,summary,published,fetched_at,relevant)"
+        " VALUES (?,?,?,?,?,?,?,?,1)",
+        (source_id, source_name, art_url, art_url,
+         title[:500], content[:1200], pub, now))
+    conn.commit()
+
+    if not cur.rowcount:
+        return {"id": None, "title": title, "source": source_name, "new": False}
+
+    aid = cur.lastrowid
+
+    text = f"{title} {content}".strip()
+    vec = embeddings.embed(text)
+    conn.execute("INSERT OR REPLACE INTO article_vec(article_id, embedding) VALUES (?,?)",
+                 (aid, serialize_float32(vec)))
+
+    _rel, kat, grund = classify(title, content[:1200])
+    conn.execute("UPDATE articles SET relevant=1, kategorie=?, grund=? WHERE id=?",
+                 (kat, grund, aid))
+    conn.commit()
+
+    from marktradar import entities, hashtags
+    entities.tag_articles(conn, [aid])
+    entities.classify_events(conn, [aid])
+    entities.classify_topics(conn, [aid])
+    hashtags.tag_articles(conn, [aid], auto_create=True)
+
+    return {"id": aid, "title": title, "source": source_name, "new": True}
+
+
 def backfill_embeddings(conn, limit: int | None = None) -> int:
     """Embeddet Artikel ohne article_vec-Eintrag (z. B. migrierte Altartikel). Idempotent.
     Gibt Anzahl neu embeddeter zurück."""

@@ -115,7 +115,12 @@ def refresh_news(source_filter: str | None = None, since_days: int = 14,
 @mcp.tool()
 def search_news(query_text: str, limit: int = 20, since_days: int | None = None,
                 kategorie: str | None = None, only_relevant: bool = True) -> list[dict]:
-    """Semantische + gefilterte Suche über den Newsstrom (Vektor-KNN, bge-m3)."""
+    """Semantische + gefilterte Suche über den Newsstrom (Vektor-KNN, bge-m3).
+
+    Stupid-Liste (Quarantäne): Inhalte AfD-naher Desinfo-Quellen erscheinen NUR,
+    wenn die Anfrage den Akteur explizit nennt (z. B. 'AfD Falschmeldungen
+    Gesundheit') — dann tragen die Treffer ein `warnung`-Feld, das mit
+    auszugeben ist. Ohne explizite Nennung werden sie nie ausgespielt."""
     return query.search_news(_conn, query_text, limit, since_days, kategorie, only_relevant)
 
 

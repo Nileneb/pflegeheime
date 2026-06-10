@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from marktradar import languages as _langs
+from marktradar import languages as _langs, stupid
 
 _log = logging.getLogger(__name__)
 
@@ -845,11 +845,15 @@ def map_data(conn, max_points=None):
     # Ballast (score_post = 25k Gazetteer-Lookups). Die reiche QC-Liste unten bleibt davon
     # unberührt. Slim-Payload macht 25k Punkte erst tragbar (~2-3× kleineres JSON).
     rows = conn.execute(
-        "SELECT p.hashtag_id,p.url,p.lat,p.lon,p.published "
+        "SELECT p.hashtag_id,p.url,p.lat,p.lon,p.published,p.author "
         "FROM hashtag_posts p WHERE p.lat IS NOT NULL "
         "ORDER BY p.published DESC LIMIT ?", (max_points,)).fetchall()
     points = []
     for r in rows:
+        # WHY(stupid-liste 2026-06-10): Quarantäne-Quellen tauchen auf der
+        # Karte NIE auf (author nur fürs Gate selektiert, bleibt aus dem Payload).
+        if stupid.is_stupid_post({"url": r["url"], "author": r["author"]}):
+            continue
         t = tags.get(r["hashtag_id"], {})
         wn = (W.get(r["hashtag_id"], {}).get("weight", 0) / maxw) if maxw else 0
         points.append({
@@ -867,6 +871,7 @@ def map_data(conn, max_points=None):
         by_tag.setdefault(r["hashtag_id"], []).append(dict(r))
     sources = {}
     for tid, lst in by_tag.items():
+        lst = [p for p in lst if not stupid.is_stupid_post(p)]
         ranked = ranking.rank_posts(lst)[:12]
         sources[tid] = [{
             "source": p["source"], "url": p["url"], "author": p["author"],
@@ -898,6 +903,8 @@ def map_data(conn, max_points=None):
             "LEFT JOIN entities e ON e.id = wp.entity_id "
             "WHERE wp.lat IS NOT NULL "
             "ORDER BY wp.published DESC LIMIT 500").fetchall():
+        if stupid.is_stupid_post({"url": r["url"], "author": r["author"]}):
+            continue
         watched.append({
             "kind": "watch", "url": r["url"], "author": r["author"],
             "content": r["content"], "lat": r["lat"], "lon": r["lon"],

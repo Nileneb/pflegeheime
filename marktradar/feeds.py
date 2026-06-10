@@ -9,6 +9,8 @@ import html
 from datetime import datetime, timezone
 from email.utils import format_datetime
 
+from marktradar import stupid
+
 SITE = "https://pflege.linn.games"
 FEED_TITLE = "Pflege-Marktradar"
 FEED_DESC = "Kuratierte, als relevant klassifizierte Pflege-, Gesundheits- und Sozialpolitik-News."
@@ -45,6 +47,9 @@ def rss(conn, limit: int = 50, tag: str | None = None, base_url: str = SITE) -> 
         f"FROM articles a {join} "
         f"WHERE a.relevant=1 AND a.link IS NOT NULL AND a.link!='' "
         f"ORDER BY a.published DESC LIMIT ?", (*params, limit)).fetchall()
+    # WHY(stupid-liste 2026-06-10): Quarantäne-Quellen erscheinen NIE im
+    # öffentlichen Feed — der RSS-Feed ist reine Verbreitung, kein Recherche-Tool.
+    rows = [r for r in rows if not stupid.is_stupid_post(dict(r))]
 
     # Kategorien (Hashtags) je Artikel in einem Schwung holen.
     ids = [r["id"] for r in rows]

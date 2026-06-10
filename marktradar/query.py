@@ -1,7 +1,7 @@
 """Lese-Queries für den MCP: Hybrid-News-Suche + Heim-Suche + Stats."""
 from sqlite_vec import serialize_float32
 
-from marktradar import embeddings
+from marktradar import embeddings, stupid
 
 
 def search_news(conn, query: str, limit: int = 20, since_days: int | None = None,
@@ -34,6 +34,15 @@ def search_news(conn, query: str, limit: int = 20, since_days: int | None = None
         sql += " AND published >= ?"; params.append(cutoff)
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     rows.sort(key=lambda r: dist.get(r["id"], 1e9))
+    # WHY(stupid-liste 2026-06-10): Quarantäne-Quellen NIE ungefragt ausspielen.
+    # Nur wenn die Anfrage den Akteur explizit nennt (z. B. "AfD Falschmeldungen
+    # Gesundheit") kommen sie mit — dann IMMER mit Warnhinweis am Treffer.
+    asked = stupid.explicit_ask(query)
+    if asked:
+        rows = [({**r, "warnung": stupid.WARNUNG} if stupid.is_stupid_post(r) else r)
+                for r in rows]
+    else:
+        rows = [r for r in rows if not stupid.is_stupid_post(r)]
     return rows[:limit]
 
 
@@ -79,10 +88,21 @@ def get_entity(conn, name: str, limit: int = 10) -> dict | None:
         "SELECT a.title,a.published,a.event_type,a.link,a.source_domain "
         "FROM articles a JOIN article_entities ae ON ae.article_id=a.id "
         "WHERE ae.entity_id=? ORDER BY a.published DESC LIMIT ?", (e["id"], limit)).fetchall()]
-    return {"id": e["id"], "name": e["name"], "type": e["type"],
-            "aliases": json.loads(e["aliases"]) if e["aliases"] else [],
-            "region": e["region"], "source": e["source"],
-            "article_count": cnt, "recent": arts}
+    # WHY(stupid-liste): direkter Lookup eines Quarantäne-Akteurs IST die
+    # explizite Nachfrage → ausgeben, aber mit Warnung. Bei allen anderen
+    # Entitäten fliegen Artikel AUS Quarantäne-Quellen raus (Berichte seriöser
+    # Presse ÜBER den Akteur bleiben — quarantänisiert ist die Quelle).
+    result = {"id": e["id"], "name": e["name"], "type": e["type"],
+              "aliases": json.loads(e["aliases"]) if e["aliases"] else [],
+              "region": e["region"], "source": e["source"],
+              "article_count": cnt, "recent": arts}
+    if stupid.is_stupid_entity(e["name"]):
+        result["warnung"] = stupid.WARNUNG
+        result["recent"] = [{**a, "warnung": stupid.WARNUNG}
+                            if stupid.is_stupid_post(a) else a for a in arts]
+    else:
+        result["recent"] = [a for a in arts if not stupid.is_stupid_post(a)]
+    return result
 
 
 def timeline(conn, name: str, limit: int = 30, event_type: str | None = None) -> list[dict]:
@@ -97,7 +117,11 @@ def timeline(conn, name: str, limit: int = 30, event_type: str | None = None) ->
     if event_type:
         sql += " AND a.event_type=?"; params.append(event_type)
     sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if stupid.is_stupid_entity(e["name"]):
+        return [{**r, "warnung": stupid.WARNUNG} if stupid.is_stupid_post(r) else r
+                for r in rows]
+    return [r for r in rows if not stupid.is_stupid_post(r)]
 
 
 def list_entities(conn, type: str | None = None, limit: int = 50) -> list[dict]:
@@ -247,7 +271,11 @@ def positions(conn, topic: str | None = None, limit: int = 120) -> list[dict]:
     if topic:
         sql += " AND at.topic = ?"; params.append(topic)
     sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if stupid.is_stupid_entity(e["name"]):
+        return [{**r, "warnung": stupid.WARNUNG} if stupid.is_stupid_post(r) else r
+                for r in rows]
+    return [r for r in rows if not stupid.is_stupid_post(r)]
 
 
 def discourse_topics(conn) -> list[str]:

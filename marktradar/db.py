@@ -113,6 +113,17 @@ CREATE TABLE IF NOT EXISTS watched_posts (
     lat REAL, lon REAL, published TEXT, fetched_at TEXT,
     UNIQUE(account_id, url)
 );
+CREATE TABLE IF NOT EXISTS event_types (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, pattern TEXT NOT NULL,
+    description TEXT, enabled INTEGER DEFAULT 1,
+    created_by TEXT DEFAULT 'manual',
+    created TEXT
+);
+CREATE TABLE IF NOT EXISTS topics (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, prefilter TEXT NOT NULL,
+    domain TEXT DEFAULT 'pflege', enabled INTEGER DEFAULT 1,
+    created_by TEXT DEFAULT 'seed'
+);
 """
 
 VEC_SCHEMA = (
@@ -174,6 +185,19 @@ def bootstrap(conn: sqlite3.Connection) -> None:
     for col in ("lang_code TEXT", "country TEXT"):
         try:
             conn.execute(f"ALTER TABLE hashtag_posts ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    # NER-Erweiterung: Confidence + Review-Quarantäne + Rückverweis (z. B. pflegeheime).
+    for col in ("confidence REAL", "review INTEGER DEFAULT 0", "ref_table TEXT",
+                "ref_id INTEGER"):
+        try:
+            conn.execute(f"ALTER TABLE entities ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    # Source-Discovery: autonom entdeckte Quellen landen als enabled=0/discovered=1.
+    for col in ("discovered INTEGER DEFAULT 0", "discovered_from TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE sources ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     conn.commit()

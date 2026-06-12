@@ -1,4 +1,34 @@
-from marktradar import migrate
+from marktradar import db, migrate
+
+
+def _cols(conn, table):
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def test_bootstrap_idempotent(conn):
+    db.bootstrap(conn)
+    db.bootstrap(conn)
+    assert _cols(conn, "event_types") >= {"name", "pattern", "enabled", "created_by"}
+    assert _cols(conn, "topics") >= {"name", "prefilter", "domain", "enabled"}
+
+
+def test_bootstrap_migrates_old_schema(tmp_path):
+    # Simuliert die prod-Volume-DB: Tabellen existieren bereits OHNE die neuen Spalten.
+    c = db.connect(str(tmp_path / "old.db"))
+    c.executescript(
+        "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+        "type TEXT NOT NULL, aliases TEXT, region TEXT, source TEXT);"
+        "CREATE TABLE sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+        "type TEXT NOT NULL, url TEXT NOT NULL UNIQUE, tier INTEGER, region TEXT, "
+        "enabled INTEGER DEFAULT 1, last_fetched TEXT, last_status TEXT, config_json TEXT);")
+    c.execute("INSERT INTO entities(name,type) VALUES ('Korian','traeger')")
+    db.bootstrap(c)
+    assert _cols(c, "entities") >= {"confidence", "review", "ref_table", "ref_id"}
+    assert _cols(c, "sources") >= {"discovered", "discovered_from"}
+    row = c.execute("SELECT name, review FROM entities").fetchone()
+    assert row["name"] == "Korian"
+    assert row["review"] in (0, None)
+    c.close()
 
 
 def test_migrate_heime_counts(conn, tmp_path):

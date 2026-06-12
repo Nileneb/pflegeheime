@@ -179,7 +179,8 @@ def stats(conn, recent_days: int = 30) -> list[dict]:
     Noise im Bodensatz. Auto-Disable findet NICHT statt (soft ranking)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=recent_days)).isoformat()
     rows = conn.execute(
-        "SELECT s.id, s.name, s.url, s.type, s.region, s.tier, s.enabled, s.last_status, s.last_fetched, "
+        "SELECT s.id, s.name, s.url, s.type, s.region, s.tier, s.enabled, s.discovered, "
+        "  s.discovered_from, s.last_status, s.last_fetched, "
         "  COUNT(a.id) AS total, "
         "  SUM(CASE WHEN a.relevant=1 THEN 1 ELSE 0 END) AS relevant, "
         "  SUM(CASE WHEN a.published >= ? THEN 1 ELSE 0 END) AS recent "
@@ -192,7 +193,9 @@ def stats(conn, recent_days: int = 30) -> list[dict]:
         rel = r["relevant"] or 0
         out.append({
             "id": r["id"], "name": r["name"], "type": r["type"], "region": r["region"],
-            "tier": r["tier"], "enabled": r["enabled"], "last_status": r["last_status"],
+            "tier": r["tier"], "enabled": r["enabled"],
+            "discovered": r["discovered"] or 0, "discovered_from": r["discovered_from"],
+            "last_status": r["last_status"],
             "last_fetched": r["last_fetched"], "total": total, "relevant": rel,
             "recent": r["recent"] or 0,
             "ratio": round(rel / total, 3) if total else 0.0,

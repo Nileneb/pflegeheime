@@ -167,6 +167,12 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/sources":
                 _json(self, {"sources": sources.stats(
                     conn, int(q.get("recent_days", ["30"])[0]))})
+            elif u.path == "/api/event_types":
+                _json(self, {"event_types": entities.list_event_types(conn),
+                             "topics": entities.list_topics(conn)})
+            elif u.path == "/api/entities/pending":
+                from marktradar import ner
+                _json(self, {"pending": ner.pending_review(conn)})
             elif u.path == "/api/hashtags":
                 _json(self, hashtags.map_data(conn))
             elif u.path == "/api/watch":
@@ -258,6 +264,30 @@ class Handler(BaseHTTPRequestHandler):
                              (1 if b["enabled"] else 0, int(b["id"])))
                 conn.commit()
                 _json(self, {"ok": True})
+            elif path == "/api/sources/discover":
+                from marktradar import discovery
+                b = self._body()
+                _json(self, discovery.discover_sources(conn, b.get("seed_domains"),
+                                                       int(b.get("limit", 10))))
+            elif path == "/api/sources/approve":
+                from marktradar import discovery
+                _json(self, discovery.approve_source(conn, int(self._body()["id"])))
+            elif path == "/api/event_types/add":
+                b = self._body()
+                _json(self, entities.add_event_type(conn, b.get("name", ""),
+                                                    b.get("pattern", ""),
+                                                    b.get("description")))
+            elif path == "/api/entities/extract":
+                from marktradar import ner
+                b = self._body()
+                _json(self, ner.extract_entities(conn, int(b.get("since_days", 7)),
+                                                 int(b.get("limit", 50))))
+            elif path == "/api/entities/review":
+                from marktradar import ner
+                b = self._body()
+                _json(self, ner.review_entity(conn, int(b["id"]), bool(b.get("accept"))))
+            elif path == "/api/entities/mirror_heime":
+                _json(self, {"mirrored": entities.mirror_heime(conn)})
             elif path == "/api/sources/seed":
                 # idempotent (INSERT OR IGNORE): zieht neue Seed-Quellen in die
                 # bestehende Prod-DB (entrypoint-Seed läuft nur bei leerer DB).
@@ -579,6 +609,7 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
       <span class="qfilter on" data-f=all onclick="setQFilter('all')">ALLE</span>
       <span class=qfilter data-f=rss onclick="setQFilter('rss')">RSS</span>
       <span class=qfilter data-f=archive onclick="setQFilter('archive')">ARCHIV</span>
+      <span class=qfilter data-f=discovered onclick="setQFilter('discovered')">ENTDECKT</span>
     </div>
     <div class=qadd>
       <input id=qaname placeholder="Name der Quelle">
@@ -587,8 +618,28 @@ input[type=color]{width:30px;height:28px;border:1px solid var(--ln);border-radiu
       <select id=qatier><option value=1>Tier 1</option><option value=2>Tier 2</option><option value=3>Tier 3</option></select>
       <select id=qaregion><option>DE</option><option>NRW</option><option>BY</option><option>BW</option><option>NI</option><option>SH</option><option>EU</option><option>INT</option></select>
       <button class=btn id=qaaddbtn onclick="addSource()">+ Quelle</button>
+      <button class=btn id=qdiscbtn onclick="discoverSources()" title="Scannt meistzitierte Artikel-Outlink-Domains nach RSS-Feeds; Funde landen als ENTDECKT in Quarantäne">🔍 Discover</button>
     </div>
     <table class=qtable id=qtable></table>
+  </div>
+  <div class=panel style="margin-top:14px">
+    <div class=ph><span>EVENT-TYPEN · DB-getriebene Taxonomie</span><span class=muted id=etstat></span></div>
+    <div class=qhint>Klassifiziert Meldungen per Regex (case-insensitive). 'auto' = LLM-Vorschlag in Quarantäne (enabled=0). Neue Typen greifen beim nächsten Ingest/Classify-Lauf.</div>
+    <div class=qadd>
+      <input id=etname placeholder="name (z.B. datenleck)" style="max-width:180px">
+      <input id=etpattern placeholder="pattern (Regex, z.B. datenleck|ransomware)">
+      <button class=btn id=etaddbtn onclick="addEventType()">+ Event-Typ</button>
+    </div>
+    <table class=qtable id=ettable></table>
+  </div>
+  <div class=panel style="margin-top:14px">
+    <div class=ph><span>NER-ENTITÄTEN · Review-Quarantäne</span><span class=muted id=nerstat></span></div>
+    <div class=qhint>Vom LLM aus dem Newsstrom extrahierte Entitäten — bestätigen (✓) oder verwerfen (✕). Extraktion via Button oder MCP-Tool extract_entities.</div>
+    <div class=qadd>
+      <button class=btn id=nerextract onclick="extractNer()">⚡ Extrahieren (letzte 7 Tage)</button>
+      <button class=btn id=mirrorheime onclick="mirrorHeime()" title="Spiegelt das Pflegeheim-Register als Entitäten (type=einrichtung)">⌂ Heime spiegeln</button>
+    </div>
+    <table class=qtable id=nertable></table>
   </div>
 </section>
 
@@ -1323,9 +1374,13 @@ function setQFilter(f){
 async function loadSources(){
   const d=await j('api/sources');QDATA=d.sources||[];
   renderSourcesTable();
+  loadEventTypes();
+  loadNerPending();
 }
 function renderSourcesTable(){
-  const rows=QFILTER==='all'?QDATA:QDATA.filter(s=>s.type===QFILTER);
+  const rows=QFILTER==='all'?QDATA:
+    QFILTER==='discovered'?QDATA.filter(s=>s.discovered===1):
+    QDATA.filter(s=>s.type===QFILTER);
   const smax=Math.max(0.01,...rows.map(s=>s.score));
   const active=QDATA.filter(s=>s.enabled).length;
   $('qstat').textContent=`${QDATA.length} Quellen · ${active} aktiv · Ø-Score ${(QDATA.reduce((a,s)=>a+s.score,0)/(QDATA.length||1)).toFixed(3)}`;
@@ -1353,8 +1408,74 @@ function renderSourcesTable(){
         `<td class=num>${s.recent}</td>`+
         `<td><span class=qbartrk><span class=qbar style="width:${w}%;background:${col}"></span></span>${s.score.toFixed(3)}</td>`+
         `<td class=muted>${esc((s.last_status||'').slice(0,22))}</td>`+
-        `<td><button class=qtog onclick="toggleSource(${s.id},${!s.enabled})">${s.enabled?'off':'on'}</button></td></tr>`;
+        `<td>${s.discovered&&!s.enabled
+          ?`<button class=qtog style="color:#2ecc71;border-color:#2ecc71" title="Feed re-verifizieren + aktivieren" onclick="approveSource(${s.id})">✓ approve</button>`
+          :`<button class=qtog onclick="toggleSource(${s.id},${!s.enabled})">${s.enabled?'off':'on'}</button>`}</td></tr>`;
     }).join('');
+}
+async function discoverSources(){
+  const btn=$('qdiscbtn');btn.disabled=true;btn.textContent='🔍 scanne…';
+  try{
+    const r=await(await POST('api/sources/discover',{limit:10})).json();
+    btn.textContent=`🔍 ${(r.found||[]).length} gefunden`;
+    if((r.found||[]).length)setQFilter('discovered');
+    loadSources();
+  }finally{setTimeout(()=>{btn.disabled=false;btn.textContent='🔍 Discover';},2500);}
+}
+async function approveSource(id){
+  const r=await(await POST('api/sources/approve',{id})).json();
+  if(r.error)alert(r.error);
+  loadSources();
+}
+async function loadEventTypes(){
+  const d=await j('api/event_types');
+  const ets=d.event_types||[];
+  $('etstat').textContent=`${ets.length} Typen · ${ets.filter(e=>e.enabled).length} aktiv · ${(d.topics||[]).length} Themen`;
+  $('ettable').innerHTML=
+    '<tr><th>Name</th><th>Pattern</th><th>Herkunft</th><th>Status</th></tr>'+
+    ets.map(e=>`<tr class="${e.enabled?'':'qoff'}"><td>${esc(e.name)}</td>`+
+      `<td class=muted style="max-width:420px;overflow:hidden;text-overflow:ellipsis">${esc(e.pattern)}</td>`+
+      `<td>${esc(e.created_by||'')}</td>`+
+      `<td>${e.enabled?'aktiv':'<span style=color:#f0a830>quarantäne</span>'}</td></tr>`).join('');
+}
+async function addEventType(){
+  const name=$('etname').value.trim(),pattern=$('etpattern').value.trim();
+  if(!name||!pattern)return;
+  const r=await(await POST('api/event_types/add',{name,pattern})).json();
+  if(r.error)alert(r.error);else{$('etname').value='';$('etpattern').value='';}
+  loadEventTypes();
+}
+async function loadNerPending(){
+  const d=await j('api/entities/pending');
+  const rows=d.pending||[];
+  $('nerstat').textContent=`${rows.length} im Review`;
+  $('nertable').innerHTML=rows.length?
+    '<tr><th>Entität</th><th>Typ</th><th class=num>Konfidenz</th><th class=num>Meldungen</th><th></th></tr>'+
+    rows.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.type)}</td>`+
+      `<td class=num>${p.confidence!=null?p.confidence.toFixed(2):''}</td>`+
+      `<td class=num>${p.articles}</td>`+
+      `<td><button class=qtog style="color:#2ecc71;border-color:#2ecc71" onclick="reviewNer(${p.id},true)">✓</button> `+
+      `<button class=qtog style="color:#ff6b5b;border-color:#ff6b5b" onclick="reviewNer(${p.id},false)">✕</button></td></tr>`).join('')
+    :'<tr><td class=muted>keine offenen Reviews</td></tr>';
+}
+async function reviewNer(id,accept){
+  await POST('api/entities/review',{id,accept});
+  loadNerPending();
+}
+async function extractNer(){
+  const btn=$('nerextract');btn.disabled=true;btn.textContent='⚡ läuft…';
+  try{
+    const r=await(await POST('api/entities/extract',{since_days:7,limit:50})).json();
+    btn.textContent=`⚡ ${r.created||0} neu · ${r.linked||0} verlinkt`;
+    loadNerPending();
+  }finally{setTimeout(()=>{btn.disabled=false;btn.textContent='⚡ Extrahieren (letzte 7 Tage)';},3000);}
+}
+async function mirrorHeime(){
+  const btn=$('mirrorheime');btn.disabled=true;
+  try{
+    const r=await(await POST('api/entities/mirror_heime',{})).json();
+    btn.textContent=`⌂ ${r.mirrored} gespiegelt`;
+  }finally{setTimeout(()=>{btn.disabled=false;btn.textContent='⌂ Heime spiegeln';},2500);}
 }
 async function addSource(){
   const name=$('qaname').value.trim();

@@ -453,8 +453,34 @@ def geocode_org(traeger: str = organigram.DEFAULT_TRAEGER) -> dict:
 _ALL_SOURCES = ("mastodon", "bluesky", "news")
 
 
+def _auto_refresh_cycle(conn, limit: int) -> None:
+    """Ein Zyklus: NEWS-Ingest (das Kernprodukt — ohne diesen Aufruf bleibt das
+    Dashboard statisch, Befund 2026-06-12: 6 Tage keine neuen Meldungen, weil nur
+    Hashtags automatisch liefen) + Hashtag-Aggregation. Beide Stufen isoliert —
+    News-Ausfall darf Hashtags nicht skippen und umgekehrt; Fehler werden geloggt,
+    nie verschluckt."""
+    try:
+        news = ingest.refresh(conn, limit=limit)
+        _log.info("auto-refresh news: new=%d embedded=%d errors=%d sources=%d",
+                  news.get("new", 0), news.get("embedded", 0),
+                  len(news.get("errors") or []), news.get("sources", 0))
+        if news.get("errors"):
+            _log.warning("auto-refresh news errors: %s", news["errors"][:5])
+    except Exception as exc:
+        _log.warning("auto-refresh news failed: %s: %s", type(exc).__name__, exc)
+    try:
+        result = hashtags.refresh(conn, sources=_ALL_SOURCES, limit=limit)
+        _log.info("auto-refresh hashtags: added=%d errors=%d tags=%d",
+                  result.get("added", 0), len(result.get("errors") or []),
+                  result.get("tags", 0))
+        if result.get("errors"):
+            _log.warning("auto-refresh hashtag errors: %s", result["errors"][:5])
+    except Exception as exc:
+        _log.warning("auto-refresh hashtags failed: %s: %s", type(exc).__name__, exc)
+
+
 def _auto_refresh_loop(interval: int, limit: int, initial_delay: int) -> None:
-    """Daemon thread: periodically calls hashtags.refresh across all sources/languages.
+    """Daemon thread: periodically runs _auto_refresh_cycle (news + hashtags).
 
     Opens a fresh SQLite connection per cycle — never shares the module-level _conn
     across threads (SQLite threading model: one connection per thread).
@@ -465,15 +491,7 @@ def _auto_refresh_loop(interval: int, limit: int, initial_delay: int) -> None:
         conn = None
         try:
             conn = db.connect()
-            result = hashtags.refresh(conn, sources=_ALL_SOURCES, limit=limit)
-            added = result.get("added", 0)
-            errors = result.get("errors", [])
-            _log.info(
-                "auto-refresh: added=%d errors=%d tags=%d",
-                added, len(errors), result.get("tags", 0),
-            )
-            if errors:
-                _log.warning("auto-refresh errors: %s", errors[:5])
+            _auto_refresh_cycle(conn, limit)
         except Exception as exc:  # WHY: one cycle failure (network, db lock) must never kill the loop
             _log.warning("auto-refresh cycle failed: %s: %s", type(exc).__name__, exc)
         finally:

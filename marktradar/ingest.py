@@ -138,26 +138,41 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
             conn.commit()
             errors.append({"source": s["name"], "error": str(e)})
 
-    # Embedden + klassifizieren der frisch eingefügten Items
-    for aid in new_ids:
+    # Embedden + klassifizieren: NEUE Items + Heilungs-Pass über Altbestand mit
+    # relevant IS NULL (z. B. weil Ollama beim letzten Lauf ausfiel). Fehler je
+    # Artikel isoliert — ein toter Embed-/Chat-Host darf den Ingest nicht killen
+    # (Artikel sind dann gespeichert, relevant bleibt NULL → nächster Lauf heilt).
+    heal_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM articles WHERE relevant IS NULL AND id NOT IN "
+        f"({','.join('?' * len(new_ids)) or '0'}) ORDER BY fetched_at DESC LIMIT 30",
+        list(new_ids)).fetchall()]
+    pipeline_failed = []
+    for aid in new_ids + heal_ids:
         row = conn.execute("SELECT title, summary FROM articles WHERE id=?", (aid,)).fetchone()
         text = f"{row['title']} {row['summary'] or ''}".strip()
-        vec = embeddings.embed(text)
-        conn.execute("INSERT OR REPLACE INTO article_vec(article_id, embedding) VALUES (?,?)",
-                     (aid, serialize_float32(vec)))
-        rel, kat, grund = classify(row["title"], row["summary"] or "")
-        conn.execute("UPDATE articles SET relevant=?, kategorie=?, grund=? WHERE id=?",
-                     (None if rel is None else int(rel), kat, grund, aid))
+        try:
+            vec = embeddings.embed(text)
+            conn.execute("INSERT OR REPLACE INTO article_vec(article_id, embedding) VALUES (?,?)",
+                         (aid, serialize_float32(vec)))
+            rel, kat, grund = classify(row["title"], row["summary"] or "")
+            conn.execute("UPDATE articles SET relevant=?, kategorie=?, grund=? WHERE id=?",
+                         (None if rel is None else int(rel), kat, grund, aid))
+        except Exception as e:
+            pipeline_failed.append({"article_id": aid, "error": f"{type(e).__name__}: {e}"})
     conn.commit()
-    # Entity-Tagging + Event-Klassifikation der neuen Items (deterministisch)
+    # Entity-Tagging + Event-Klassifikation der neuen UND geheilten Items
+    # (geheilte stammen aus abgebrochenen Läufen — deren Tagging fehlt ebenso)
     from marktradar import entities, hashtags
-    tagged = entities.tag_articles(conn, new_ids)
-    entities.classify_events(conn, new_ids)
-    stance = entities.classify_topics(conn, new_ids)
+    pipeline_ids = new_ids + heal_ids
+    tagged = entities.tag_articles(conn, pipeline_ids)
+    entities.classify_events(conn, pipeline_ids)
+    stance = entities.classify_topics(conn, pipeline_ids)
     # Hashtag-Bildung: matchen + bei Bedarf neues Hashtag aus dem Event (LLM)
-    ht = hashtags.tag_articles(conn, new_ids, auto_create=True)
-    report = {"new": new_total, "embedded": len(new_ids), "tagged": tagged,
-              "stance": stance, "hashtags": ht, "errors": errors, "sources": len(srcs)}
+    ht = hashtags.tag_articles(conn, pipeline_ids, auto_create=True)
+    report = {"new": new_total, "embedded": len(new_ids) + len(heal_ids) - len(pipeline_failed),
+              "healed": len(heal_ids), "pipeline_failed": pipeline_failed,
+              "tagged": tagged, "stance": stance, "hashtags": ht,
+              "errors": errors, "sources": len(srcs)}
     if extract_ner:  # opt-in: LLM-NER nur auf Wunsch, Ingest-Tempo bleibt unverändert
         from marktradar import ner
         report["ner"] = ner.extract_entities(conn, article_ids=new_ids)

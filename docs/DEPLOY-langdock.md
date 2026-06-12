@@ -46,8 +46,13 @@ docker compose exec mcp-pflege python -c \
    print(ingest.refresh(c)); entities.classify_topics(c)"
 ```
 
-## Live-Stand (2026-06-08) — korrigiert ggü. oben
-- **Läuft in Prod**, in Langdock verbunden, 11/11 Tools ok.
+## Live-Stand (2026-06-08, Tool-Stand 2026-06-12) — korrigiert ggü. oben
+- **Läuft in Prod**, in Langdock verbunden. Tool-Anzahl wächst mit dem Server —
+  aktuelle Liste via MCP `tools/list` (Stand 2026-06-12: 40, inkl. self-extending
+  discover_sources/approve_source, extract_entities/review_entity, add_event_type,
+  add_topic, mirror_heime).
+- **Deploy-Hinweis:** seit app.linn.games@86ca2b5 pullt `deploy.sh` auch
+  mcp-pflege/pflege-viewer — vorher blieb das Image bei Deploys stale.
 - Container `applinngames-mcp-pflege-1` auf u-server, Volume `applinngames_pflege-data` (geseedet).
 - **NAS-Reverse-Proxy → Port 6481** (app.linn.games web-nginx). 6480 = mayring/memory-nginx (Falle!).
 - **OAuth-AS = `https://mcp.linn.games`** (hat `registration_endpoint`; app.linn.games nicht). DNS-Rebinding-Schutz aus (`PFLEGE_DNS_REBIND_PROTECT=0`).

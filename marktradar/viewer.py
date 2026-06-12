@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from marktradar import db, feeds, geo, hashtags, organigram, query, sources
+from marktradar import db, entities, feeds, geo, hashtags, organigram, query, sources
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 _LANGGEO_CACHE = None
@@ -1394,7 +1394,8 @@ if(!STATIC) setInterval(refresh,30000);
 
 
 def main():
-    _c = db.connect(DB_PATH); db.bootstrap(_c); hashtags.seed(_c); _c.close()
+    _c = db.connect(DB_PATH); db.bootstrap(_c); hashtags.seed(_c)
+    entities.seed_event_types(_c); entities.seed_topics(_c); _c.close()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
     print(f"Pflege-Marktradar Viewer → http://localhost:{PORT}  (DB: {DB_PATH})", flush=True)

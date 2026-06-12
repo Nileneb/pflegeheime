@@ -223,7 +223,7 @@ def discourse(conn) -> dict:
         d = bytopic.setdefault(r["topic"], {}).setdefault(r["ename"], {})
         d[r["stance"]] = d.get(r["stance"], 0) + r["n"]
     topics = []
-    for topic in entities.TOPIC_PREFILTER:
+    for topic in entities._load_topic_prefilters(conn):
         agg = bytopic.get(topic, {})
         nodes = [{"name": name, "stance": max(cnt, key=cnt.get),
                   "count": sum(cnt.values()), "breakdown": cnt}
@@ -272,18 +272,25 @@ def positions(conn, topic: str | None = None, limit: int = 120) -> list[dict]:
         sql += " AND at.topic = ?"; params.append(topic)
     sql += " ORDER BY a.published DESC LIMIT ?"; params.append(limit)
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
-    if stupid.is_stupid_entity(e["name"]):
-        return [{**r, "warnung": stupid.WARNUNG} if stupid.is_stupid_post(r) else r
-                for r in rows]
-    return [r for r in rows if not stupid.is_stupid_post(r)]
+    # WHY(stupid-liste): Zeile-für-Zeile statt Entity-Lookup — positions() hat keine
+    # einzelne Entität im Scope. Quarantäne-Akteur als Diskurs-Teilnehmer bleibt
+    # sichtbar (ggf. mit Warnung), Posts AUS Quarantäne-Quellen fliegen sonst raus.
+    out = []
+    for r in rows:
+        if stupid.is_stupid_entity(r["entity"]):
+            out.append({**r, "warnung": stupid.WARNUNG} if stupid.is_stupid_post(r) else r)
+        elif not stupid.is_stupid_post(r):
+            out.append(r)
+    return out
 
 
 def discourse_topics(conn) -> list[str]:
     """Themen mit synthetisierten Positionen (für die ‹ ›-Navigation)."""
     from marktradar import entities
     have = {r["topic"] for r in conn.execute("SELECT DISTINCT topic FROM topic_positions").fetchall()}
-    ordered = [t for t in entities.TOPIC_PREFILTER if t in have]
-    return ordered or list(entities.TOPIC_PREFILTER)
+    known = list(entities._load_topic_prefilters(conn))
+    ordered = [t for t in known if t in have]
+    return ordered or known
 
 
 def discourse_topic(conn, topic: str) -> dict:

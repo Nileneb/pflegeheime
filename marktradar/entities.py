@@ -70,7 +70,7 @@ SEED_INSTITUTION = [
     ("BVMed", ["Bundesverband Medizintechnologie"]),
 ]
 
-EVENT_RULES = [
+SEED_EVENT_RULES = [
     ("insolvenz", r"insolven|pleite|zahlungsunf|gläubiger|schutzschirm|sanierungsverfahren"),
     ("politik", r"reform|gesetz|verordnung|förder|bundestag|ministerium|vergütung|"
                 r"personalschlüssel|tariftreue|pflegegrad|pflegeneuordnung"),
@@ -82,7 +82,115 @@ EVENT_RULES = [
     ("auszeichnung", r"auszeichnung|\bpreis\b|ausgezeichnet|prämiert|zertifi"),
     ("produkt", r"\bsoftware\b|digital|\bapp\b|launch|markteinführung|innovation"),
 ]
-_EVENT_RES = [(t, re.compile(p, re.I)) for t, p in EVENT_RULES]
+_SEED_EVENT_RES = [(t, re.compile(p, re.I)) for t, p in SEED_EVENT_RULES]
+
+
+def seed_event_types(conn) -> int:
+    """Seedet die Event-Typ-Taxonomie aus den bisherigen Hardcodes in die DB.
+    Idempotent (UNIQUE name). Gibt Anzahl NEUER Typen zurück."""
+    n = 0
+    for name, pattern in SEED_EVENT_RULES:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO event_types(name,pattern,created_by,created) "
+            "VALUES (?,?,'seed',datetime('now'))", (name, pattern))
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
+def _load_event_matchers(conn) -> list:
+    """[(name, compiled_regex)] aller enabled Event-Typen. Seedet lazy bei leerer
+    Tabelle. Kaputtes Pattern (user/auto) wird disabled statt den Lauf zu killen."""
+    if not conn.execute("SELECT 1 FROM event_types LIMIT 1").fetchone():
+        seed_event_types(conn)
+    out = []
+    for r in conn.execute(
+            "SELECT id, name, pattern FROM event_types WHERE enabled=1 ORDER BY id").fetchall():
+        try:
+            out.append((r["name"], re.compile(r["pattern"], re.I)))
+        except re.error:
+            conn.execute("UPDATE event_types SET enabled=0, "
+                         "description=COALESCE(description,'')||' [disabled: invalid regex]' "
+                         "WHERE id=?", (r["id"],))
+            conn.commit()
+    return out
+
+
+def list_event_types(conn) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, name, pattern, description, enabled, created_by, created "
+        "FROM event_types ORDER BY id").fetchall()]
+
+
+def add_event_type(conn, name: str, pattern: str, description: str | None = None,
+                   created_by: str = "manual") -> dict:
+    name = (name or "").strip().lower()
+    if not name or not (pattern or "").strip():
+        return {"error": "name und pattern erforderlich"}
+    try:
+        re.compile(pattern, re.I)
+    except re.error as e:
+        return {"error": f"ungültiges Regex-Pattern: {e}"}
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO event_types(name,pattern,description,created_by,created) "
+        "VALUES (?,?,?,?,datetime('now'))", (name, pattern, description, created_by))
+    conn.commit()
+    if cur.rowcount == 0:
+        return {"error": f"event_type '{name}' existiert bereits"}
+    return {"ok": True, "id": cur.lastrowid, "name": name}
+
+
+_SUGGEST_SYS = (
+    "Du analysierst Schlagzeilen aus der Marktbeobachtung, die KEINEM bekannten "
+    "Event-Typ zugeordnet werden konnten. Schlage 1–3 NEUE Event-Typen vor, die "
+    "wiederkehrende Ereignismuster abdecken. Je Typ: name (1 wort, lowercase, "
+    "deutsch), pattern (case-insensitive Regex mit |-Alternativen über typische "
+    "Schlüsselwörter), description (1 Satz). Antworte NUR als JSON-Liste: "
+    "[{\"name\":\"...\",\"pattern\":\"...\",\"description\":\"...\"}].")
+
+
+def suggest_event_types(conn, sample: int = 50, min_unclassified: int = 20) -> dict:
+    """LLM-Vorschläge für neue Event-Typen aus unklassifizierten relevanten Artikeln.
+    Vorschläge landen in Quarantäne (enabled=0, created_by='auto') — Aktivierung nur
+    explizit. Gibt {suggested:[...], skipped?} zurück."""
+    rows = conn.execute(
+        "SELECT title FROM articles WHERE event_type IS NULL AND relevant=1 "
+        "ORDER BY published DESC LIMIT ?", (sample,)).fetchall()
+    if len(rows) < min_unclassified:
+        return {"suggested": [], "skipped": f"nur {len(rows)} unklassifizierte Artikel "
+                                            f"(< {min_unclassified})"}
+    existing = {r["name"] for r in conn.execute("SELECT name FROM event_types").fetchall()}
+    payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
+               "think": False, "messages": [
+                   {"role": "system", "content": _SUGGEST_SYS},
+                   {"role": "user", "content":
+                    "Bekannte Typen: " + ", ".join(sorted(existing)) + "\nSchlagzeilen:\n" +
+                    "\n".join(f"- {r['title']}" for r in rows)[:4000]}],
+               "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 400}}
+    r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload,
+                      headers=embeddings.chat_headers(), timeout=120)
+    r.raise_for_status()
+    data = json.loads(r.json().get("message", {}).get("content", "") or "[]")
+    items = data if isinstance(data, list) else data.get("event_types") or data.get("typen") or []
+    suggested = []
+    for it in items[:3]:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name", "")).strip().lower()
+        pattern = str(it.get("pattern", "")).strip()
+        if not name or name in existing or not pattern:
+            continue
+        try:
+            re.compile(pattern, re.I)
+        except re.error:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO event_types(name,pattern,description,enabled,"
+            "created_by,created) VALUES (?,?,?,0,'auto',datetime('now'))",
+            (name, pattern, str(it.get("description", "")).strip()[:200] or None))
+        suggested.append({"name": name, "pattern": pattern})
+    conn.commit()
+    return {"suggested": suggested}
 
 
 def _clean_traeger(v: str) -> str | None:
@@ -166,17 +274,19 @@ def tag_articles(conn, article_ids=None, matchers=None) -> int:
     return n
 
 
-def event_type(title: str, summary: str = "") -> str | None:
+def event_type(title: str, summary: str = "", matchers=None) -> str | None:
+    """matchers=None → Seed-Taxonomie (rückwärtskompatibel, ohne DB nutzbar)."""
     text = f"{title or ''} {summary or ''}"
-    for typ, rgx in _EVENT_RES:
+    for typ, rgx in (matchers if matchers is not None else _SEED_EVENT_RES):
         if rgx.search(text):
             return typ
     return None
 
 
 def classify_events(conn, article_ids=None) -> int:
-    """Setzt articles.event_type per Keyword-Taxonomie. article_ids=None → alle ohne
-    event_type. Gibt Anzahl gesetzter zurück."""
+    """Setzt articles.event_type per DB-getriebener Keyword-Taxonomie (event_types).
+    article_ids=None → alle ohne event_type. Gibt Anzahl gesetzter zurück."""
+    matchers = _load_event_matchers(conn)
     if article_ids is None:
         rows = conn.execute(
             "SELECT id, title, summary FROM articles WHERE event_type IS NULL").fetchall()
@@ -189,7 +299,7 @@ def classify_events(conn, article_ids=None) -> int:
             list(article_ids)).fetchall()
     n = 0
     for a in rows:
-        et = event_type(a["title"], a["summary"] or "")
+        et = event_type(a["title"], a["summary"] or "", matchers=matchers)
         if et:
             conn.execute("UPDATE articles SET event_type=? WHERE id=?", (et, a["id"]))
             n += 1
@@ -200,14 +310,66 @@ def classify_events(conn, article_ids=None) -> int:
 # ── LLM-Stance pro Diskurs-Thema ─────────────────────────────────────────────
 # Keyword-GATE (welche Themen ein Artikel überhaupt berühren KÖNNTE) → bounded
 # LLM-Aufrufe nur auf Treffer. Stance selbst kommt vom LLM (qwen), nicht vom Keyword.
-TOPIC_PREFILTER = {
+SEED_TOPICS = {
     "Pflegereform": r"pflegereform|pflegeneuordnung|\breform\b|gesetzentwurf|referentenentwurf",
     "Finanzierung & Tariftreue": r"tariftreue|finanzier|vergütung|\bbeitrag|\bkosten\b|sparen|\bspar|eigenanteil",
     "Personal & Fachkräfte": r"personal|fachkräfte|fachkraft|personalbemessung|personaluntergrenze|pflegekräfte|ausbildung",
     "Bürokratie & Digitalisierung": r"bürokrat|digitalisier|dokumentation|entlastung|\bki\b|software",
     "Prävention & Versorgung": r"prävention|versorgung|vorsorge|\bambulant|stationär",
 }
-_PREFILTER = {t: re.compile(p, re.I) for t, p in TOPIC_PREFILTER.items()}
+
+
+def seed_topics(conn) -> int:
+    """Seedet die Diskurs-Themen (Domain 'pflege') aus den bisherigen Hardcodes.
+    Idempotent (UNIQUE name)."""
+    n = 0
+    for name, prefilter in SEED_TOPICS.items():
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO topics(name,prefilter,domain,created_by) "
+            "VALUES (?,?,'pflege','seed')", (name, prefilter))
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
+def _load_topic_prefilters(conn) -> dict:
+    """{topic: compiled_prefilter} aller enabled Topics. Seedet lazy bei leerer
+    Tabelle. Kaputtes Pattern wird disabled statt den Lauf zu killen."""
+    if not conn.execute("SELECT 1 FROM topics LIMIT 1").fetchone():
+        seed_topics(conn)
+    out = {}
+    for r in conn.execute(
+            "SELECT id, name, prefilter FROM topics WHERE enabled=1 ORDER BY id").fetchall():
+        try:
+            out[r["name"]] = re.compile(r["prefilter"], re.I)
+        except re.error:
+            conn.execute("UPDATE topics SET enabled=0 WHERE id=?", (r["id"],))
+            conn.commit()
+    return out
+
+
+def add_topic(conn, name: str, prefilter: str, domain: str = "custom") -> dict:
+    """Neues Beobachtungs-Thema ohne Codeänderung — Multi-Domain-Seam fürs BI-Modell."""
+    name = (name or "").strip()
+    if not name or not (prefilter or "").strip():
+        return {"error": "name und prefilter erforderlich"}
+    try:
+        re.compile(prefilter, re.I)
+    except re.error as e:
+        return {"error": f"ungültiges Prefilter-Regex: {e}"}
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO topics(name,prefilter,domain,created_by) "
+        "VALUES (?,?,?,'manual')", (name, prefilter, domain))
+    conn.commit()
+    if cur.rowcount == 0:
+        return {"error": f"topic '{name}' existiert bereits"}
+    return {"ok": True, "id": cur.lastrowid, "name": name}
+
+
+def list_topics(conn) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, name, prefilter, domain, enabled, created_by "
+        "FROM topics ORDER BY id").fetchall()]
 STANCE_LABELS = ("kritisch", "fordernd", "befürwortend", "neutral")
 POS_PALETTE = ["#5b8def", "#2ecc71", "#f0a830", "#9b6dff", "#26c6da", "#ff7043",
                "#ff4d4d", "#7a8290"]
@@ -237,7 +399,7 @@ def synthesize_positions(conn, sample: int = 40, min_hits: int = 3) -> dict:
     """Destilliert je Thema 4–6 kanonische Positionen (mit Farbe + Tendenz) aus echten
     Schlagzeilen → topic_positions. Gibt {topic: anzahl} zurück."""
     out = {}
-    for topic, rgx in _PREFILTER.items():
+    for topic, rgx in _load_topic_prefilters(conn).items():
         rows = conn.execute(
             "SELECT title, summary FROM articles "
             "ORDER BY published DESC NULLS LAST LIMIT 800").fetchall()
@@ -293,9 +455,10 @@ def classify_topics(conn, article_ids=None) -> dict:
             f"SELECT id, title, summary FROM articles WHERE id IN ({ph})",
             list(article_ids)).fetchall()
     classified = failed = 0
+    prefilters = _load_topic_prefilters(conn)
     for a in rows:
         text = f"{a['title'] or ''} {a['summary'] or ''}"
-        topics = [t for t, rgx in _PREFILTER.items() if rgx.search(text) and pos_by_topic.get(t)]
+        topics = [t for t, rgx in prefilters.items() if rgx.search(text) and pos_by_topic.get(t)]
         if not topics:
             continue
         plist = "\n".join(f"{t}: {', '.join(pos_by_topic[t])}" for t in topics)
@@ -331,9 +494,30 @@ def classify_topics(conn, article_ids=None) -> dict:
     return {"classified": classified, "failed": failed}
 
 
+def mirror_heime(conn, limit: int | None = None) -> int:
+    """Spiegelt pflegeheime-Register-Zeilen als Entitäten (kind 'einrichtung') —
+    macht das Register zur Basis des generischen BI-Entity-Modells, get_entity/
+    timeline/list_entities sehen die Einrichtungen. Bewusst OHNE Aliase (Heim-Namen
+    sind oft generisch) und nur manuell aufrufbar, nie im bootstrap. Idempotent."""
+    sql = ("SELECT id, name, kreis FROM pflegeheime WHERE name IS NOT NULL "
+           "AND length(trim(name)) >= 3 ORDER BY id")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    n = 0
+    for r in conn.execute(sql).fetchall():
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO entities(name,type,region,source,ref_table,ref_id) "
+            "VALUES (?,?,?,'register','pflegeheime',?)",
+            (r["name"].strip(), "einrichtung", r["kreis"], r["id"]))
+        n += cur.rowcount
+    conn.commit()
+    return n
+
+
 # Entity-Typ → Farbe (Akteur-Chips im Viewer, konsistent mit dem Entitäten-Graph).
 ACTOR_COLORS = {"traeger": "#67d98b", "hersteller": "#f0a830",
-                "partei": "#c792ea", "behoerde": "#5b8def"}
+                "partei": "#c792ea", "behoerde": "#5b8def",
+                "einrichtung": "#26c6da"}
 
 
 def actors_for_hashtags(conn, per: int = 6) -> dict:

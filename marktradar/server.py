@@ -29,7 +29,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
-from marktradar import auth, db, hashtags, ingest, organigram, query
+from marktradar import auth, db, entities, hashtags, ingest, organigram, query
 
 INSTRUCTIONS = (
     "Pflege-Marktradar — Markt-Intelligence für den deutschen Pflegemarkt "
@@ -102,6 +102,8 @@ _conn = db.connect()
 db.bootstrap(_conn)
 organigram.seed(_conn)  # Bergische-Diakonie-Organigramm (idempotent)
 hashtags.seed(_conn)    # Hashtag-Set (idempotent)
+entities.seed_event_types(_conn)  # Event-Typ-Taxonomie aus Hardcode → DB (idempotent)
+entities.seed_topics(_conn)       # Diskurs-Themen aus Hardcode → DB (idempotent)
 
 
 @mcp.tool()
@@ -184,6 +186,47 @@ def timeline(name: str, limit: int = 30, event_type: str | None = None) -> list[
 def list_entities(type: str | None = None, limit: int = 50) -> list[dict]:
     """Entitäten mit Meldungs-Anzahl (meistgenannte zuerst). type-Filter optional."""
     return query.list_entities(_conn, type, limit)
+
+
+@mcp.tool()
+def list_event_types() -> list[dict]:
+    """Event-Typ-Taxonomie (DB-getrieben): name, pattern, enabled, created_by.
+    'auto'-Typen sind LLM-Vorschläge in Quarantäne (enabled=0)."""
+    return entities.list_event_types(_conn)
+
+
+@mcp.tool()
+def add_event_type(name: str, pattern: str, description: str | None = None) -> dict:
+    """Neuen Event-Typ registrieren (Regex-Pattern, case-insensitive). Greift beim
+    nächsten classify-Lauf — die Taxonomie erweitert sich ohne Code-Änderung."""
+    return entities.add_event_type(_conn, name, pattern, description)
+
+
+@mcp.tool()
+def suggest_event_types(sample: int = 50) -> dict:
+    """LLM analysiert unklassifizierte Artikel und schlägt neue Event-Typen vor.
+    Vorschläge landen in Quarantäne (enabled=0, created_by='auto') — Review nötig."""
+    return entities.suggest_event_types(_conn, sample)
+
+
+@mcp.tool()
+def list_topics() -> list[dict]:
+    """Beobachtungs-Themen (Diskurs-Prefilter, DB-getrieben, multi-domain-fähig)."""
+    return entities.list_topics(_conn)
+
+
+@mcp.tool()
+def add_topic(name: str, prefilter: str, domain: str = "custom") -> dict:
+    """Neues Beobachtungs-Thema registrieren (Prefilter-Regex). Macht den Marktradar
+    domänen-erweiterbar — z. B. domain='industrie' neben 'pflege'."""
+    return entities.add_topic(_conn, name, prefilter, domain)
+
+
+@mcp.tool()
+def mirror_heime(limit: int | None = None) -> dict:
+    """Spiegelt das Pflegeheim-Register (2388 Einrichtungen) als Entitäten
+    (type='einrichtung') → get_entity/timeline/list_entities sehen sie. Idempotent."""
+    return {"mirrored": entities.mirror_heime(_conn, limit)}
 
 
 @mcp.tool()

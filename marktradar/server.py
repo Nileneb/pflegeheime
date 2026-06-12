@@ -147,6 +147,23 @@ def add_source(name: str, url: str, type: str = "rss", tier: int = 1,
 
 
 @mcp.tool()
+def discover_sources(seed_domains: list[str] | None = None, limit: int = 10) -> dict:
+    """Entdeckt autonom neue RSS-Quellen: ohne seed_domains werden die meist-
+    zitierten Artikel-Outlink-Domains gescannt. Funde landen in Quarantäne
+    (enabled=0) — Aktivierung nur via approve_source. Stupid-Listen-Domains
+    sind ausgeschlossen."""
+    from marktradar import discovery
+    return discovery.discover_sources(_conn, seed_domains, limit)
+
+
+@mcp.tool()
+def approve_source(source_id: int) -> dict:
+    """Aktiviert eine entdeckte Quelle nach Re-Verifikation (Feed liefert Items)."""
+    from marktradar import discovery
+    return discovery.approve_source(_conn, source_id)
+
+
+@mcp.tool()
 def archive_document(title: str, content: str,
                      source_name: str = "Internes Archiv",
                      published: str | None = None) -> dict:

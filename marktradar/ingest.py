@@ -94,7 +94,7 @@ def _domain(url: str) -> str:
 
 
 def refresh(conn, source_filter: str | None = None, since_days: int = 14,
-            limit: int | None = None) -> dict:
+            limit: int | None = None, extract_ner: bool = False) -> dict:
     """Holt enabled Quellen, diff't über UNIQUE(source_id,guid), embedded + klassifiziert
     neue Items. Fehler je Quelle landen in sources.last_status UND im Report (nicht geschluckt)."""
     q = "SELECT id, name, url FROM sources WHERE enabled=1 AND type='rss'"
@@ -166,8 +166,12 @@ def refresh(conn, source_filter: str | None = None, since_days: int = 14,
     stance = entities.classify_topics(conn, new_ids)
     # Hashtag-Bildung: matchen + bei Bedarf neues Hashtag aus dem Event (LLM)
     ht = hashtags.tag_articles(conn, new_ids, auto_create=True)
-    return {"new": new_total, "embedded": len(new_ids), "tagged": tagged,
-            "stance": stance, "hashtags": ht, "errors": errors, "sources": len(srcs)}
+    report = {"new": new_total, "embedded": len(new_ids), "tagged": tagged,
+              "stance": stance, "hashtags": ht, "errors": errors, "sources": len(srcs)}
+    if extract_ner:  # opt-in: LLM-NER nur auf Wunsch, Ingest-Tempo bleibt unverändert
+        from marktradar import ner
+        report["ner"] = ner.extract_entities(conn, article_ids=new_ids)
+    return report
 
 
 def archive_document(conn, title: str, content: str,

@@ -108,10 +108,11 @@ entities.seed_topics(_conn)       # Diskurs-Themen aus Hardcode → DB (idempote
 
 @mcp.tool()
 def refresh_news(source_filter: str | None = None, since_days: int = 14,
-                 limit: int | None = None) -> dict:
+                 limit: int | None = None, extract_ner: bool = False) -> dict:
     """Holt frische Artikel aus allen aktiven RSS-Quellen, embedded + klassifiziert sie.
-    Gibt Report zurück: {new, embedded, sources, errors}."""
-    return ingest.refresh(_conn, source_filter, since_days, limit)
+    extract_ner=True: zusätzlich LLM-NER über die neuen Artikel (neue Entitäten in
+    Review-Quarantäne). Gibt Report zurück: {new, embedded, sources, errors[, ner]}."""
+    return ingest.refresh(_conn, source_filter, since_days, limit, extract_ner)
 
 
 @mcp.tool()
@@ -186,6 +187,31 @@ def timeline(name: str, limit: int = 30, event_type: str | None = None) -> list[
 def list_entities(type: str | None = None, limit: int = 50) -> list[dict]:
     """Entitäten mit Meldungs-Anzahl (meistgenannte zuerst). type-Filter optional."""
     return query.list_entities(_conn, type, limit)
+
+
+@mcp.tool()
+def extract_entities(since_days: int = 7, limit: int = 50,
+                     min_confidence: float = 0.7) -> dict:
+    """LLM-NER über relevante Artikel: materialisiert neue Entitäten aus dem
+    Newsstrom (Quarantäne review=1), verlinkt bekannte. Selbst-erweiternder
+    Entity-Layer. Gibt {articles, linked, created, skipped, failed}."""
+    from marktradar import ner
+    return ner.extract_entities(_conn, since_days, limit, min_confidence)
+
+
+@mcp.tool()
+def review_entity(entity_id: int, accept: bool) -> dict:
+    """Review-Entscheid für eine NER-Entität: accept=True bestätigt (review=0),
+    accept=False löscht Entität + Links. Pending-Liste via pending_entities."""
+    from marktradar import ner
+    return ner.review_entity(_conn, entity_id, accept)
+
+
+@mcp.tool()
+def pending_entities(limit: int = 50) -> list[dict]:
+    """NER-Entitäten in Review-Quarantäne (meistverlinkte zuerst)."""
+    from marktradar import ner
+    return ner.pending_review(_conn, limit)
 
 
 @mcp.tool()

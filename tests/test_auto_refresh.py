@@ -57,7 +57,7 @@ def test_loop_continues_after_refresh_exception(monkeypatch):
 
 
 def test_loop_logs_summary_on_success(monkeypatch, caplog):
-    """A successful cycle logs an INFO line with added/errors/tags."""
+    """A successful cycle logs INFO lines for BOTH stages (news + hashtags)."""
     import logging
 
     call_count = [0]
@@ -68,6 +68,8 @@ def test_loop_logs_summary_on_success(monkeypatch, caplog):
             return {"added": 42, "errors": [], "tags": 3, "per_source": {}}
         raise _StopLoop
 
+    monkeypatch.setattr(server.ingest, "refresh",
+                        lambda c, **k: {"new": 5, "embedded": 5, "errors": [], "sources": 2})
     monkeypatch.setattr(server.hashtags, "refresh", _fake_refresh)
     monkeypatch.setattr(server.db, "connect", lambda: object())
     monkeypatch.setattr(time, "sleep", lambda s: None)
@@ -76,11 +78,12 @@ def test_loop_logs_summary_on_success(monkeypatch, caplog):
         with pytest.raises(_StopLoop):
             server._auto_refresh_loop(interval=1, limit=5, initial_delay=0)
 
-    assert any("auto-refresh: added=42" in r.message for r in caplog.records)
+    assert any("auto-refresh news: new=5" in r.message for r in caplog.records)
+    assert any("auto-refresh hashtags: added=42" in r.message for r in caplog.records)
 
 
 def test_loop_logs_warning_on_cycle_exception(monkeypatch, caplog):
-    """A failing refresh cycle emits a WARNING — not a crash."""
+    """A failing hashtag stage emits a WARNING — not a crash, news stage unberührt."""
     import logging
 
     attempt = [0]
@@ -91,6 +94,8 @@ def test_loop_logs_warning_on_cycle_exception(monkeypatch, caplog):
             raise ConnectionError("timeout")
         raise _StopLoop
 
+    monkeypatch.setattr(server.ingest, "refresh",
+                        lambda c, **k: {"new": 0, "embedded": 0, "errors": [], "sources": 0})
     monkeypatch.setattr(server.hashtags, "refresh", _fake_refresh)
     monkeypatch.setattr(server.db, "connect", lambda: object())
     monkeypatch.setattr(time, "sleep", lambda s: None)
@@ -100,7 +105,7 @@ def test_loop_logs_warning_on_cycle_exception(monkeypatch, caplog):
             server._auto_refresh_loop(interval=1, limit=5, initial_delay=0)
 
     warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("auto-refresh cycle failed" in m for m in warning_msgs)
+    assert any("auto-refresh hashtags failed" in m for m in warning_msgs)
 
 
 # ── _start_auto_refresh gating tests ─────────────────────────────────────────

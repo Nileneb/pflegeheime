@@ -3,15 +3,9 @@ deterministisches Wortgrenzen-Alias-Tagging Artikel→Entität, Keyword-Event-
 Klassifikation und LLM-Stance pro Thema (Diskurs). NER-Extraktion ist als spätere
 Stufe vorgesehen (Spalten entities.source / article_entities.method tragen dafür 'ner')."""
 import json
-import os
 import re
 
-import requests
-
 from marktradar import embeddings
-
-OLLAMA_HOST = embeddings.OLLAMA_HOST
-STANCE_MODEL = os.getenv("CHAT_MODEL", "qwen3.5:9b")
 
 # Kuratierte große Betreiber/Träger (canonical, [aliases])
 SEED_TRAEGER = [
@@ -160,17 +154,11 @@ def suggest_event_types(conn, sample: int = 50, min_unclassified: int = 20) -> d
         return {"suggested": [], "skipped": f"nur {len(rows)} unklassifizierte Artikel "
                                             f"(< {min_unclassified})"}
     existing = {r["name"] for r in conn.execute("SELECT name FROM event_types").fetchall()}
-    payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
-               "think": False, "messages": [
-                   {"role": "system", "content": _SUGGEST_SYS},
-                   {"role": "user", "content":
-                    "Bekannte Typen: " + ", ".join(sorted(existing)) + "\nSchlagzeilen:\n" +
-                    "\n".join(f"- {r['title']}" for r in rows)[:4000]}],
-               "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 400}}
-    r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload,
-                      headers=embeddings.chat_headers(), timeout=120)
-    r.raise_for_status()
-    data = json.loads(r.json().get("message", {}).get("content", "") or "[]")
+    data = embeddings.chat_json(
+        _SUGGEST_SYS,
+        "Bekannte Typen: " + ", ".join(sorted(existing)) + "\nSchlagzeilen:\n" +
+        "\n".join(f"- {r['title']}" for r in rows)[:4000],
+        temperature=0.2, num_ctx=4096, num_predict=400, timeout=120, empty=[])
     items = data if isinstance(data, list) else data.get("event_types") or data.get("typen") or []
     suggested = []
     for it in items[:3]:
@@ -407,15 +395,10 @@ def synthesize_positions(conn, sample: int = 40, min_hits: int = 3) -> dict:
         if len(hits) < min_hits:
             continue
         try:
-            payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
-                       "think": False, "messages": [
-                           {"role": "system", "content": _SYNTH_SYS},
-                           {"role": "user", "content":
-                            f"Thema: {topic}\nSchlagzeilen:\n" + "\n".join(f"- {h}" for h in hits)[:4000]}],
-                       "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 300}}
-            r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload, headers=embeddings.chat_headers(), timeout=120)
-            r.raise_for_status()
-            data = json.loads(r.json().get("message", {}).get("content", "") or "{}")
+            data = embeddings.chat_json(
+                _SYNTH_SYS,
+                f"Thema: {topic}\nSchlagzeilen:\n" + "\n".join(f"- {h}" for h in hits)[:4000],
+                temperature=0.1, num_ctx=4096, num_predict=300, timeout=120, empty={})
             positions = data if isinstance(data, list) else data.get("positionen") or data.get("positions") or []
         except Exception:
             continue
@@ -463,16 +446,11 @@ def classify_topics(conn, article_ids=None) -> dict:
             continue
         plist = "\n".join(f"{t}: {', '.join(pos_by_topic[t])}" for t in topics)
         try:
-            payload = {"model": STANCE_MODEL, "format": "json", "stream": False,
-                       "think": False, "messages": [
-                           {"role": "system", "content": _CLS_SYS},
-                           {"role": "user", "content":
-                            f"Positionen je Thema:\n{plist}\n\nTitel: {a['title']}\n"
-                            f"Text: {a['summary'] or ''}"[:1800]}],
-                       "options": {"temperature": 0.0, "num_ctx": 4096, "num_predict": 220}}
-            r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload, headers=embeddings.chat_headers(), timeout=90)
-            r.raise_for_status()
-            d = json.loads(r.json().get("message", {}).get("content", "") or "{}")
+            d = embeddings.chat_json(
+                _CLS_SYS,
+                f"Positionen je Thema:\n{plist}\n\nTitel: {a['title']}\n"
+                f"Text: {a['summary'] or ''}"[:1800],
+                num_ctx=4096, num_predict=220, empty={}) or {}
         except Exception:
             failed += 1
             continue

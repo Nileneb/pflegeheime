@@ -2,14 +2,10 @@
 Stufe des Entity-Layers (entities.source='ner', article_entities.method='ner').
 Neue Entitäten landen in Review-Quarantäne (review=1) statt ungeprüft im Graph."""
 import json
-import os
 import re
-
-import requests
 
 from marktradar import embeddings
 
-NER_MODEL = os.getenv("CHAT_MODEL", "qwen3.5:9b")
 KINDS = ("traeger", "hersteller", "behoerde", "partei", "person", "sonstig")
 
 _NER_SYS = (
@@ -59,16 +55,7 @@ def extract_entities(conn, since_days: int = 7, limit: int = 50,
     for i, a in enumerate(rows):
         text = f"Titel: {a['title']}\nText: {a['summary'] or ''}"[:1800]
         try:
-            payload = {"model": NER_MODEL, "format": "json", "stream": False,
-                       "think": False, "messages": [
-                           {"role": "system", "content": _NER_SYS},
-                           {"role": "user", "content": text}],
-                       "options": {"temperature": 0.0, "num_ctx": 2048,
-                                   "num_predict": 300}}
-            r = requests.post(f"{embeddings.CHAT_HOST}/api/chat", json=payload,
-                              headers=embeddings.chat_headers(), timeout=90)
-            r.raise_for_status()
-            data = json.loads(r.json().get("message", {}).get("content", "") or "[]")
+            data = embeddings.chat_json(_NER_SYS, text, num_predict=300, empty=[])
         except Exception:
             failed += 1
             continue

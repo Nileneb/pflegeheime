@@ -158,7 +158,7 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/entity":
                 _json(self, query.get_entity(conn, q.get("name", [""])[0]) or {})
             elif u.path == "/api/org":
-                traeger = q.get("traeger", ["Bergische Diakonie"])[0]
+                traeger = q.get("traeger", [organigram.DEFAULT_TRAEGER])[0]
                 _json(self, {
                     "stats": organigram.stats(conn, traeger),
                     "tree": organigram.tree(conn, traeger),
@@ -295,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT count(*) c FROM sources").fetchone()["c"]})
             elif path == "/api/geocode_org":
                 b = self._body()
-                _json(self, geo.geocode_units(conn, b.get("traeger", "Bergische Diakonie"),
+                _json(self, geo.geocode_units(conn, b.get("traeger", organigram.DEFAULT_TRAEGER),
                                               b.get("limit")))
             else:
                 _json(self, {"error": "not found"}, 404)

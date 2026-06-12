@@ -196,7 +196,7 @@ def get_entity(name: str, limit: int = 10) -> dict | None:
 @mcp.tool()
 def timeline(name: str, limit: int = 30, event_type: str | None = None) -> list[dict]:
     """Chronologische Meldungs-Timeline einer Entität, optional nach event_type
-    (insolvenz/expansion/politik/personalie/produkt/auszeichnung/schliessung)."""
+    (verfügbare Typen via list_event_types — die Taxonomie ist DB-getrieben)."""
     return query.timeline(_conn, name, limit, event_type)
 
 
@@ -293,7 +293,7 @@ def render_chart(topic: str) -> Image:
 
 
 @mcp.tool()
-def org_tree(traeger: str = "Bergische Diakonie") -> list[dict]:
+def org_tree(traeger: str = organigram.DEFAULT_TRAEGER) -> list[dict]:
     """ORGANIGRAMM / Organisationsstruktur / Aufbau eines Trägers (Pflege-Unternehmen,
     z.B. „Bergische Diakonie“): verschachtelter Baum Sektoren → Bereiche → Einrichtungen,
     mit Icon/Farbe je Einheit. Nutze DIESES Tool für jede Frage nach Abteilungen,
@@ -302,20 +302,20 @@ def org_tree(traeger: str = "Bergische Diakonie") -> list[dict]:
 
 
 @mcp.tool()
-def org_persons(unit_id: int | None = None, traeger: str = "Bergische Diakonie") -> list[dict]:
+def org_persons(unit_id: int | None = None, traeger: str = organigram.DEFAULT_TRAEGER) -> list[dict]:
     """Personen eines Trägers; mit unit_id rekursiv inkl. aller Untereinheiten."""
     return organigram.persons(_conn, unit_id, traeger)
 
 
 @mcp.tool()
-def org_stats(traeger: str = "Bergische Diakonie") -> dict:
+def org_stats(traeger: str = organigram.DEFAULT_TRAEGER) -> dict:
     """Kennzahlen der Org-Struktur: Einheiten, Einrichtungen, Personen."""
     return organigram.stats(_conn, traeger)
 
 
 @mcp.tool()
 def add_org_unit(name: str, parent_id: int | None = None, type: str = "bereich",
-                 traeger: str = "Bergische Diakonie", short_name: str | None = None,
+                 traeger: str = organigram.DEFAULT_TRAEGER, short_name: str | None = None,
                  icon: str | None = None, color: str | None = None) -> dict:
     """Legt eine neue Org-Einheit unter parent_id an (level wird abgeleitet).
     icon = Emoji (z.B. "🏠"), color = Hex (z.B. "#2E8B57"). Ohne color erbt die
@@ -326,7 +326,7 @@ def add_org_unit(name: str, parent_id: int | None = None, type: str = "bereich",
 @mcp.tool()
 def add_org_person(first_name: str, last_name: str, role: str | None = None,
                    unit_id: int | None = None, email: str | None = None,
-                   traeger: str = "Bergische Diakonie") -> dict:
+                   traeger: str = organigram.DEFAULT_TRAEGER) -> dict:
     """Fügt eine Person einer Org-Einheit hinzu."""
     return organigram.add_person(_conn, first_name, last_name, role, unit_id, email,
                                  traeger=traeger)
@@ -443,7 +443,7 @@ def tag_news_hashtags(auto_create: bool = False, limit: int = 400) -> dict:
 
 
 @mcp.tool()
-def geocode_org(traeger: str = "Bergische Diakonie") -> dict:
+def geocode_org(traeger: str = organigram.DEFAULT_TRAEGER) -> dict:
     """Geokodiert die Einrichtungen eines Trägers (Nominatim) → lat/lon für die
     begehbare 3D-OSM-Szene. Einmalig nötig; Nominatim-Policy max 1 req/s."""
     from marktradar import geo

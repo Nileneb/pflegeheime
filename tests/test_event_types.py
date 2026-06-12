@@ -1,4 +1,4 @@
-from marktradar import entities
+from marktradar import embeddings, entities
 
 
 def _article(conn, title, relevant=1):
@@ -63,7 +63,7 @@ def test_suggest_event_types_quarantined(conn, monkeypatch, fake_llm):
     for i in range(25):
         _article(conn, f"Tarifstreik in Einrichtung {i}")
     monkeypatch.setattr(
-        entities.requests, "post",
+        embeddings.requests, "post",
         fake_llm('[{"name":"streik","pattern":"streik|tarifkonflikt|warnstreik",'
                  '"description":"Arbeitskämpfe"}]'))
     res = entities.suggest_event_types(conn, sample=30)

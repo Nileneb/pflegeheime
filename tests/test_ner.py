@@ -1,4 +1,4 @@
-from marktradar import entities, ner
+from marktradar import embeddings, entities, ner
 
 
 def _article(conn, title, summary="", relevant=1):
@@ -13,7 +13,7 @@ def _article(conn, title, summary="", relevant=1):
 
 def test_extract_creates_new_entity_in_quarantine(conn, monkeypatch, fake_llm):
     aid = _article(conn, "Novacare GmbH übernimmt drei Standorte")
-    monkeypatch.setattr(ner.requests, "post",
+    monkeypatch.setattr(embeddings.requests, "post",
                         fake_llm('[{"name":"Novacare GmbH","kind":"traeger","confidence":0.92}]'))
     rep = ner.extract_entities(conn, article_ids=[aid])
     assert rep["created"] == 1 and rep["linked"] == 1 and rep["failed"] == 0
@@ -29,7 +29,7 @@ def test_extract_creates_new_entity_in_quarantine(conn, monkeypatch, fake_llm):
 def test_extract_dedups_against_alias(conn, monkeypatch, fake_llm):
     entities.seed_entities(conn)
     aid = _article(conn, "Curanum baut Pflegeplätze aus")
-    monkeypatch.setattr(ner.requests, "post",
+    monkeypatch.setattr(embeddings.requests, "post",
                         fake_llm('[{"name":"Curanum","kind":"traeger","confidence":0.95}]'))
     rep = ner.extract_entities(conn, article_ids=[aid])
     # Curanum ist Alias von Korian → KEINE neue Entität, nur Link
@@ -42,7 +42,7 @@ def test_extract_dedups_against_alias(conn, monkeypatch, fake_llm):
 
 def test_extract_confidence_threshold(conn, monkeypatch, fake_llm):
     aid = _article(conn, "Irgendein Verein macht irgendwas")
-    monkeypatch.setattr(ner.requests, "post",
+    monkeypatch.setattr(embeddings.requests, "post",
                         fake_llm('[{"name":"Unsicherer Verein","kind":"sonstig","confidence":0.3}]'))
     rep = ner.extract_entities(conn, article_ids=[aid], min_confidence=0.7)
     assert rep["created"] == 0 and rep["skipped"] == 1
@@ -53,7 +53,7 @@ def test_extract_isolates_llm_failure(conn, monkeypatch):
     a1 = _article(conn, "Artikel eins")
     def boom(*a, **k):
         raise ConnectionError("ollama down")
-    monkeypatch.setattr(ner.requests, "post", boom)
+    monkeypatch.setattr(embeddings.requests, "post", boom)
     rep = ner.extract_entities(conn, article_ids=[a1])
     assert rep["failed"] == 1 and rep["created"] == 0
 
@@ -79,7 +79,7 @@ def test_refresh_opt_in_calls_ner(conn, monkeypatch):
 
 def test_review_accept_and_reject(conn, monkeypatch, fake_llm):
     aid = _article(conn, "Novacare GmbH übernimmt Standorte")
-    monkeypatch.setattr(ner.requests, "post",
+    monkeypatch.setattr(embeddings.requests, "post",
                         fake_llm('[{"name":"Novacare GmbH","kind":"traeger","confidence":0.9}]'))
     ner.extract_entities(conn, article_ids=[aid])
     eid = conn.execute("SELECT id FROM entities WHERE name='Novacare GmbH'").fetchone()["id"]

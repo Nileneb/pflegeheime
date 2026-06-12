@@ -6,6 +6,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from marktradar import organigram
+
 UA = "pflege-marktradar/1.0 (+https://pflege.linn.games)"
 TIMEOUT = 30
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
@@ -60,7 +62,7 @@ def _match_heim(conn, name):
     return None
 
 
-def geocode_units(conn, traeger="Bergische Diakonie", limit=None):
+def geocode_units(conn, traeger=organigram.DEFAULT_TRAEGER, limit=None):
     """Geokodiert noch nicht verortete Einrichtungen (type='einrichtung') des Trägers.
     Reihenfolge: echte Adresse aus pflegeheime-Liste → Name+Träger → Träger-Zentrum.
     Nominatim-Policy: max 1 req/s."""

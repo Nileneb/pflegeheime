@@ -1,4 +1,4 @@
-from marktradar import entities
+from marktradar import embeddings, entities
 
 
 def _article(conn, title, summary="", relevant=1, published="2026-06-01T08:00:00+00:00"):
@@ -65,7 +65,7 @@ def _fake_llm(*a, **k):
 
 def test_classify_topics_stores_position_and_valence(conn, monkeypatch):
     aid = _article(conn, "Verband fordert mehr Personal in der Pflege")
-    monkeypatch.setattr(entities.requests, "post", _fake_llm)
+    monkeypatch.setattr(embeddings.requests, "post", _fake_llm)
     entities.synthesize_positions(conn, min_hits=1)
     rep = entities.classify_topics(conn)
     assert rep["classified"] >= 1
@@ -80,7 +80,7 @@ def test_discourse_topic_legend_and_items(conn, monkeypatch):
     entities.seed_entities(conn)
     _article(conn, "CDU fordert mehr Personal in der Pflege")
     entities.tag_articles(conn)
-    monkeypatch.setattr(entities.requests, "post", _fake_llm)
+    monkeypatch.setattr(embeddings.requests, "post", _fake_llm)
     entities.synthesize_positions(conn, min_hits=1)
     entities.classify_topics(conn)
     d = query.discourse_topic(conn, "Personal & Fachkräfte")

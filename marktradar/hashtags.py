@@ -358,16 +358,10 @@ def _extract_hashtags(title, summary):
     landet die Antwort im thinking-Channel statt in content; daher beide auswerten
     und num_predict großzügig, damit nach dem Reasoning noch content folgt."""
     from marktradar import embeddings
-    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     try:
-        r = requests.post(
-            f"{embeddings.CHAT_HOST}/api/chat", headers=embeddings.chat_headers(),
-            json={"model": model, "format": "json", "stream": False, "think": False,
-                  "messages": [{"role": "system", "content": _EXTRACT_SYS},
-                               {"role": "user", "content": f"Titel: {title}\nText: {summary or ''}"[:1200]}],
-                  "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 400}}, timeout=90)
-        r.raise_for_status()
-        msg = r.json().get("message", {}) or {}
+        msg = embeddings.chat_raw(
+            _EXTRACT_SYS, f"Titel: {title}\nText: {summary or ''}"[:1200],
+            temperature=0.1, num_predict=400)
         content = msg.get("content")
         # WHY: ein nicht-leeres content ist autoritativ — auch "[]" (= bewusst keine
         # Themen). Nur wenn der content-Channel KOMPLETT leer ist (Reasoning-Modell
@@ -388,19 +382,14 @@ def debug_extract(conn, n=3):
         "SELECT id,title,summary,relevant FROM articles "
         "WHERE id NOT IN (SELECT article_id FROM article_hashtags) "
         "ORDER BY relevant DESC, published DESC LIMIT ?", (n,)).fetchall()
-    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
-    out = {"host": embeddings.CHAT_HOST, "model": model, "items": []}
+    out = {"host": embeddings.CHAT_HOST, "model": embeddings.CHAT_MODEL, "items": []}
     for a in rows:
         item = {"id": a["id"], "title": a["title"], "relevant": a["relevant"]}
         try:
-            r = requests.post(
-                f"{embeddings.CHAT_HOST}/api/chat", headers=embeddings.chat_headers(),
-                json={"model": model, "format": "json", "stream": False, "think": False,
-                      "messages": [{"role": "system", "content": _EXTRACT_SYS},
-                                   {"role": "user", "content": f"Titel: {a['title']}\nText: {a['summary'] or ''}"[:1200]}],
-                      "options": {"temperature": 0.1, "num_ctx": 2048, "num_predict": 400}}, timeout=90)
-            item["status"] = r.status_code
-            msg = (r.json().get("message") or {})
+            msg = embeddings.chat_raw(
+                _EXTRACT_SYS, f"Titel: {a['title']}\nText: {a['summary'] or ''}"[:1200],
+                temperature=0.1, num_predict=400)
+            item["status"] = 200  # chat_raw wirft bei non-2xx
             content = msg.get("content")
             item["content"] = (content or "")[:400]
             item["thinking"] = (msg.get("thinking") or "")[:400]
@@ -741,7 +730,6 @@ def translate_hashtag(term: str, target_langs: list[str]) -> dict[str, str]:
     — never silently swallows, never returns partial garbage from an exception path.
     """
     from marktradar import embeddings
-    model = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     # WHY: user-supplied codes may not exist in the language table; filter them early
     # to avoid a TypeError on _langs.by_code(code)["name"] for unknown codes.
     known_langs = [code for code in target_langs if _langs.by_code(code) is not None]
@@ -749,26 +737,10 @@ def translate_hashtag(term: str, target_langs: list[str]) -> dict[str, str]:
         return {}
     payload = {"term": term, "languages": {code: _langs.by_code(code)["name"] for code in known_langs}}
     try:
-        r = requests.post(
-            f"{embeddings.CHAT_HOST}/api/chat",
-            headers=embeddings.chat_headers(),
-            json={
-                "model": model,
-                "format": "json",
-                "stream": False,
-                "think": False,
-                "messages": [
-                    {"role": "system", "content": _TRANSLATE_SYS},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 2048},
-            },
-            timeout=120,
-        )
-        r.raise_for_status()
-        msg = (r.json().get("message") or {})
-        content = msg.get("content") or ""
-        parsed = _parse_translation_json(content)
+        msg = embeddings.chat_raw(
+            _TRANSLATE_SYS, json.dumps(payload, ensure_ascii=False),
+            temperature=0.1, num_ctx=4096, num_predict=2048, timeout=120)
+        parsed = _parse_translation_json(msg.get("content") or "")
         # Keep only codes that were actually requested and have non-empty values
         return {k: v for k, v in parsed.items() if k in known_langs and v and v.strip()}
     except Exception as exc:

@@ -118,3 +118,20 @@ def test_auto_refresh_cycle_news_failure_does_not_skip_hashtags(conn, monkeypatc
                         lambda c, sources=None, limit=None: calls.append("hashtags") or {})
     server._auto_refresh_cycle(conn, limit=5)  # darf nicht raisen
     assert calls == ["hashtags"]
+
+
+def test_auto_refresh_cycle_requeues_silent_misclassifications(conn, monkeypatch):
+    # Prod-Befund 2026-06-12: leerer LLM-content → relevant=0 mit grund='' →
+    # Artikel hingen für immer als irrelevant fest (Heal-Pass greift nur bei NULL).
+    from marktradar import server
+    conn.execute("INSERT INTO sources(name,type,url) VALUES('s','rss','http://x')")
+    conn.execute("INSERT INTO articles(source_id,guid,title,relevant,grund) "
+                 "VALUES (1,'g1','Opfer des Bugs',0,'')")
+    conn.execute("INSERT INTO articles(source_id,guid,title,relevant,grund) "
+                 "VALUES (1,'g2','Echt irrelevant',0,'Navigation')")
+    conn.commit()
+    monkeypatch.setattr(server.ingest, "refresh", lambda c, **k: {"new": 0, "errors": []})
+    monkeypatch.setattr(server.hashtags, "refresh", lambda c, **k: {})
+    server._auto_refresh_cycle(conn, limit=5)
+    assert conn.execute("SELECT relevant FROM articles WHERE guid='g1'").fetchone()["relevant"] is None
+    assert conn.execute("SELECT relevant FROM articles WHERE guid='g2'").fetchone()["relevant"] == 0

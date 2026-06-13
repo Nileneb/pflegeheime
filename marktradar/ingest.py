@@ -74,7 +74,7 @@ def classify(title: str, summary: str) -> tuple:
     if is_job(title, summary):
         return True, "Stellenanzeige", "Stellenausschreibung (regelbasiert erkannt)"
     d = embeddings.chat_json(SYSTEM, f"Titel: {title}\nText: {summary}"[:1500],
-                             num_predict=120, empty={}) or {}
+                             empty={}) or {}
     return bool(d.get("relevant")), (d.get("kategorie") or "")[:60], (d.get("grund") or "")[:200]
 
 

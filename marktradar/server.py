@@ -459,6 +459,13 @@ def _auto_refresh_cycle(conn, limit: int) -> None:
     Hashtags automatisch liefen) + Hashtag-Aggregation. Beide Stufen isoliert —
     News-Ausfall darf Hashtags nicht skippen und umgekehrt; Fehler werden geloggt,
     nie verschluckt."""
+    # WHY(prod-befund 2026-06-12): Artikel mit relevant=0 UND leerem grund sind
+    # Opfer des Reasoning-Modell-Bugs (leerer content → still als irrelevant
+    # markiert) — zurück auf NULL, damit der Heilungs-Pass sie echt klassifiziert.
+    # Selbstlimitierend: echte Klassifikationen tragen immer einen grund.
+    conn.execute("UPDATE articles SET relevant=NULL "
+                 "WHERE relevant=0 AND (grund IS NULL OR grund='')")
+    conn.commit()
     try:
         news = ingest.refresh(conn, limit=limit)
         _log.info("auto-refresh news: new=%d embedded=%d errors=%d sources=%d",

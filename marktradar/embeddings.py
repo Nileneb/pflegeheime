@@ -74,13 +74,36 @@ def chat_raw(system: str, user: str, *, temperature: float = 0.0,
     return r.json().get("message", {}) or {}
 
 
+def _json_from_text(text: str):
+    """Erstes JSON-Objekt/-Array aus Prosa fischen (für thinking-Channel-Antworten)."""
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
 def chat_json(system: str, user: str, *, temperature: float = 0.0,
-              num_ctx: int = 2048, num_predict: int = 200,
+              num_ctx: int = 2048, num_predict: int = 400,
               timeout: int = 90, empty=None):
     """chat_raw + content als JSON geparst. Leerer content → `empty`
-    (statt JSONDecodeError), damit Aufrufer ihren Default-Typ bestimmen."""
-    content = chat_raw(system, user, temperature=temperature, num_ctx=num_ctx,
-                       num_predict=num_predict, timeout=timeout).get("content", "")
-    if not (content or "").strip():
-        return empty
-    return json.loads(content)
+    (statt JSONDecodeError), damit Aufrufer ihren Default-Typ bestimmen.
+
+    WHY(reasoning-modelle, prod-befund 2026-06-12): gpt-oss:20b (Ollama Cloud)
+    ignoriert think:false — bei knappem num_predict landet die Antwort im
+    thinking-Channel, content bleibt leer. Das machte in Prod JEDE Relevanz-
+    Klassifikation still zu relevant=0 (Feed seit Deploy statisch). Daher:
+    num_predict großzügig (400 default) + Fallback auf JSON-Extrakt aus
+    thinking, wenn content leer ist. Gleiches Muster wie hashtags._extract_
+    hashtags — jetzt zentral statt pro Modul."""
+    msg = chat_raw(system, user, temperature=temperature, num_ctx=num_ctx,
+                   num_predict=num_predict, timeout=timeout)
+    content = (msg.get("content") or "").strip()
+    if content:
+        return json.loads(content)
+    parsed = _json_from_text(msg.get("thinking") or "")
+    return parsed if parsed is not None else empty
